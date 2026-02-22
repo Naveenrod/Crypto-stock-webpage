@@ -405,7 +405,9 @@ def get_backtest_chart(symbol: str, asset_type: str = "crypto") -> list[dict]:
     if asset_type == "crypto":
         df = get_binance_history(symbol, days=500)
     else:
-        df = get_yf_history(symbol, days=500)
+        # Stocks need more history: SMA-200 warm-up + 200-row training window
+        # 730 days → ~500 trading days after market-closed days stripped → ~300 usable rows
+        df = get_yf_history(symbol, days=730)
 
     if df.empty or len(df) < MIN_TRAIN_ROWS:
         return []

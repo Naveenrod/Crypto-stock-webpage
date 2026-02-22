@@ -69,7 +69,7 @@ export default function CryptoTab() {
   const losers  = [...assets].sort((a, b) => a.change_24h - b.change_24h).slice(0, 3);
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col flex-1 min-h-0 gap-4">
       {/* Top movers */}
       {!isLoading && assets.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -100,9 +100,9 @@ export default function CryptoTab() {
         </div>
       )}
 
-      <div className="flex gap-4">
+      <div className="flex gap-4 flex-1 min-h-0">
         {/* Left: Asset List */}
-        <div className="w-72 flex-shrink-0 space-y-3">
+        <div className="w-72 flex-shrink-0 flex flex-col gap-3">
           {/* Platform filter */}
           <div className="flex gap-1 bg-surface rounded-lg p-1">
             {(["all","binance","revolut"] as Platform[]).map(p => (
@@ -127,7 +127,7 @@ export default function CryptoTab() {
           </div>
 
           {/* List */}
-          <div className="bg-card border border-border rounded-xl overflow-y-auto max-h-[70vh] p-1 space-y-0.5">
+          <div className="bg-card border border-border rounded-xl overflow-y-auto flex-1 min-h-0 p-1 space-y-0.5">
             {isLoading
               ? Array.from({ length: 8 }).map((_, i) => <div key={i} className="skeleton h-12 w-full rounded-lg" />)
               : filtered.map(asset => (
@@ -143,7 +143,7 @@ export default function CryptoTab() {
         </div>
 
         {/* Right: Detail Panel */}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 min-h-0 overflow-y-auto">
           {!selected ? (
             <div className="h-full flex items-center justify-center bg-card border border-border rounded-xl">
               <div className="text-center text-muted py-20">

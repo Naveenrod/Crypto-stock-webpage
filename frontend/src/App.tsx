@@ -20,7 +20,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("crypto");
 
   return (
-    <div className="min-h-screen bg-bg text-slate-200" style={{ fontFamily: "Inter, sans-serif" }}>
+    <div className="min-h-screen flex flex-col bg-bg text-slate-200" style={{ fontFamily: "Inter, sans-serif" }}>
       {/* Header */}
       <header className="sticky top-0 z-50 border-b border-border bg-surface/95 backdrop-blur">
         <div className="mx-auto max-w-screen-2xl px-4 py-3 flex items-center justify-between">
@@ -77,7 +77,7 @@ export default function App() {
       </div>
 
       {/* Main content */}
-      <main className="mx-auto max-w-screen-2xl px-4 py-6">
+      <main className="mx-auto max-w-screen-2xl w-full px-4 py-6 flex flex-col flex-1 min-h-0">
         {activeTab === "crypto" && <CryptoTab />}
         {activeTab === "us"     && <StocksUSTab />}
         {activeTab === "au"     && <StocksAUTab />}
