@@ -142,3 +142,48 @@ export const fetchAssetNews = (symbol: string, type: "crypto" | "us" | "au") => 
     : `/stocks/au/${symbol}/news`;
   return api.get<{ news: NewsItem[] }>(path).then(r => r.data.news);
 };
+
+// ── Top 5 Picks ─────────────────────────────────────────────
+export interface TopPickIndicators {
+  rsi:            number;
+  rsi_signal:     string;
+  macd_bullish:   boolean;
+  bb_position:    number;
+  bb_signal:      string;
+  golden_cross:   boolean;
+  volume_surge:   boolean;
+  trend_strength: string;
+  adx:            number;
+  sma_20:         number;
+  sma_50:         number;
+  sma_200:        number;
+}
+
+export interface TopPick {
+  symbol:            string;
+  name:              string;
+  asset_type:        string;           // "crypto" | "stock"
+  signal:            "BUY" | "SELL" | "HOLD";
+  score:             number;           // 0–100 composite score
+  ml_probability:    number;           // 0–100
+  confidence:        number;           // 0–100
+  current_price:     number;
+  change_24h:        number;           // % change over last 24 h
+  trend:             string;           // "Bullish" | "Bearish" | "Sideways"
+  backtest_accuracy: number;           // % e.g. 63.2
+  indicators:        TopPickIndicators;
+}
+
+export interface TopPicksResult {
+  crypto:        TopPick[];
+  us_stocks:     TopPick[];
+  au_stocks:     TopPick[];
+  computed_at:   string;               // ISO datetime
+  total_scanned: number;               // successful predictions out of 235
+  ttl_seconds:   number;               // 300
+  from_cache:    boolean;
+}
+
+// Override default 30 s timeout — cold scan of 235 assets can take up to ~3 min
+export const fetchTopPicks = (): Promise<TopPicksResult> =>
+  api.get<TopPicksResult>("/picks/top5", { timeout: 250_000 }).then(r => r.data);

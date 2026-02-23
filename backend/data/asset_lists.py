@@ -204,29 +204,29 @@ COMMSEC_AU_STOCKS = [
     {"symbol": "APA.AX",  "name": "APA Group",                "sector": "Utilities"},
     {"symbol": "ORG.AX",  "name": "Origin Energy",            "sector": "Energy"},
     {"symbol": "STO.AX",  "name": "Santos Ltd",               "sector": "Energy"},
-    {"symbol": "WPL.AX",  "name": "Woodside Energy",          "sector": "Energy"},
+    {"symbol": "WDS.AX",  "name": "Woodside Energy",          "sector": "Energy"},      # was WPL.AX (renamed 2022)
     {"symbol": "S32.AX",  "name": "South32 Ltd",              "sector": "Materials"},
-    {"symbol": "OZL.AX",  "name": "OZ Minerals",              "sector": "Materials"},
-    {"symbol": "NCM.AX",  "name": "Newcrest Mining",          "sector": "Materials"},
+    {"symbol": "LYC.AX",  "name": "Lynas Rare Earths",        "sector": "Materials"},   # replaced delisted OZL.AX
+    {"symbol": "WHC.AX",  "name": "Whitehaven Coal",          "sector": "Materials"},   # replaced delisted NCM.AX
     {"symbol": "EVN.AX",  "name": "Evolution Mining",         "sector": "Materials"},
     {"symbol": "NST.AX",  "name": "Northern Star",            "sector": "Materials"},
     {"symbol": "AMC.AX",  "name": "Amcor plc",                "sector": "Materials"},
     {"symbol": "BXB.AX",  "name": "Brambles Limited",         "sector": "Industrials"},
     {"symbol": "QAN.AX",  "name": "Qantas Airways",           "sector": "Industrials"},
-    {"symbol": "SYD.AX",  "name": "Sydney Airport",           "sector": "Industrials"},
+    {"symbol": "AZJ.AX",  "name": "Aurizon Holdings",          "sector": "Industrials"},  # replaced delisted SYD.AX
     {"symbol": "ALL.AX",  "name": "Aristocrat Leisure",       "sector": "Consumer Disc."},
-    {"symbol": "CWN.AX",  "name": "Crown Resorts",            "sector": "Consumer Disc."},
+    {"symbol": "QUB.AX",  "name": "Qube Holdings",             "sector": "Consumer Disc."},  # replaced delisted CWN.AX
     {"symbol": "TAH.AX",  "name": "Tabcorp Holdings",         "sector": "Consumer Disc."},
     {"symbol": "REA.AX",  "name": "REA Group",                "sector": "Technology"},
     {"symbol": "CAR.AX",  "name": "CAR Group",                "sector": "Technology"},
     {"symbol": "SEK.AX",  "name": "Seek Limited",             "sector": "Technology"},
     {"symbol": "XRO.AX",  "name": "Xero Limited",             "sector": "Technology"},
     {"symbol": "WTC.AX",  "name": "WiseTech Global",          "sector": "Technology"},
-    {"symbol": "ALU.AX",  "name": "Altium Limited",           "sector": "Technology"},
+    {"symbol": "PME.AX",  "name": "Pro Medicus Limited",       "sector": "Technology"},   # replaced delisted ALU.AX
     {"symbol": "CPU.AX",  "name": "Computershare",            "sector": "Technology"},
     {"symbol": "TNE.AX",  "name": "TechnologyOne",            "sector": "Technology"},
     {"symbol": "MP1.AX",  "name": "Megaport Limited",         "sector": "Technology"},
-    {"symbol": "SQ2.AX",  "name": "Block Inc.",               "sector": "Technology"},
+    {"symbol": "ZIP.AX",  "name": "Zip Co Limited",            "sector": "Technology"},   # replaced delisted SQ2.AX
     {"symbol": "APX.AX",  "name": "Appen Limited",            "sector": "Technology"},
     {"symbol": "IEL.AX",  "name": "IDP Education",            "sector": "Consumer Disc."},
     {"symbol": "JBH.AX",  "name": "JB Hi-Fi",                 "sector": "Consumer Disc."},
@@ -243,7 +243,7 @@ COMMSEC_AU_STOCKS = [
     {"symbol": "SUN.AX",  "name": "Suncorp Group",            "sector": "Financials"},
     {"symbol": "AGL.AX",  "name": "AGL Energy",               "sector": "Utilities"},
     {"symbol": "ORI.AX",  "name": "Orica Limited",            "sector": "Materials"},
-    {"symbol": "IPL.AX",  "name": "Incitec Pivot",            "sector": "Materials"},
+    {"symbol": "AWC.AX",  "name": "Alumina Limited",           "sector": "Materials"},   # replaced slow IPL.AX
     {"symbol": "ING.AX",  "name": "Inghams Group",            "sector": "Consumer Staples"},
     {"symbol": "A2M.AX",  "name": "a2 Milk Company",          "sector": "Consumer Staples"},
     {"symbol": "TWE.AX",  "name": "Treasury Wine Estates",    "sector": "Consumer Staples"},

@@ -1,26 +1,28 @@
 import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Bitcoin, TrendingUp, BarChart2, Newspaper, Activity } from "lucide-react";
+import { Bitcoin, TrendingUp, BarChart2, Newspaper, Activity, Trophy } from "lucide-react";
 import CryptoTab from "./components/CryptoTab";
 import StocksUSTab from "./components/StocksUSTab";
 import StocksAUTab from "./components/StocksAUTab";
 import NewsSection from "./components/NewsSection";
+import TopPicksTab from "./components/TopPicksTab";
 import clsx from "clsx";
 
-type Tab = "crypto" | "us" | "au" | "news";
+type Tab = "picks" | "crypto" | "us" | "au" | "news";
 
 const TABS: { id: Tab; label: string; icon: React.FC<any>; desc: string }[] = [
-  { id: "crypto", label: "Crypto",          icon: Bitcoin,     desc: "Binance & Revolut" },
-  { id: "us",     label: "US Stocks",        icon: TrendingUp,  desc: "Revolut" },
-  { id: "au",     label: "AU Stocks",        icon: BarChart2,   desc: "CommSec" },
-  { id: "news",   label: "News & Trends",    icon: Newspaper,   desc: "Live Feed" },
+  { id: "picks",  label: "Top 5 Picks",      icon: Trophy,      desc: "AI Ranked" },
+  { id: "crypto", label: "Crypto",            icon: Bitcoin,     desc: "Binance & Revolut" },
+  { id: "us",     label: "US Stocks",         icon: TrendingUp,  desc: "Revolut" },
+  { id: "au",     label: "AU Stocks",         icon: BarChart2,   desc: "CommSec" },
+  { id: "news",   label: "News & Trends",     icon: Newspaper,   desc: "Live Feed" },
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>("crypto");
+  const [activeTab, setActiveTab] = useState<Tab>("picks");
 
   return (
-    <div className="min-h-screen flex flex-col bg-bg text-slate-200" style={{ fontFamily: "Inter, sans-serif" }}>
+    <div className="min-h-screen bg-bg text-slate-200" style={{ fontFamily: "Inter, sans-serif" }}>
       {/* Header */}
       <header className="sticky top-0 z-50 border-b border-border bg-surface/95 backdrop-blur">
         <div className="mx-auto max-w-screen-2xl px-4 py-3 flex items-center justify-between">
@@ -77,7 +79,8 @@ export default function App() {
       </div>
 
       {/* Main content */}
-      <main className="mx-auto max-w-screen-2xl w-full px-4 py-6 flex flex-col flex-1 min-h-0">
+      <main className="mx-auto max-w-screen-2xl w-full px-4 py-6">
+        {activeTab === "picks"  && <TopPicksTab />}
         {activeTab === "crypto" && <CryptoTab />}
         {activeTab === "us"     && <StocksUSTab />}
         {activeTab === "au"     && <StocksAUTab />}

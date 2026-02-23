@@ -168,7 +168,7 @@ FEATURE_COLS = [
 
 def _train_ensemble(X_train, y_train):
     rf  = RandomForestClassifier(n_estimators=200, max_depth=8, min_samples_leaf=5,
-                                  random_state=42, n_jobs=-1)
+                                  random_state=42, n_jobs=1)   # n_jobs=1: avoids CPU oversubscription in ThreadPoolExecutor
     gb  = GradientBoostingClassifier(n_estimators=150, max_depth=4, learning_rate=0.05,
                                       random_state=42)
     xgb = XGBClassifier(n_estimators=150, max_depth=5, learning_rate=0.05,
@@ -451,6 +451,115 @@ def get_backtest_chart(symbol: str, asset_type: str = "crypto") -> list[dict]:
         })
 
     return results[-60:]   # last 60 signal points
+
+
+def quick_predict_asset(symbol: str, asset_type: str = "crypto") -> dict:
+    """
+    Lightweight prediction for bulk scanning (used by the Top-5 Picks endpoint).
+
+    Identical to predict_asset() EXCEPT the expensive walk-forward backtest
+    (6 folds × 3 model trains) is replaced by a single train-on-all + predict.
+    This makes each prediction ~6-8x faster, cutting full-scan time from
+    ~12 minutes to ~2 minutes for 235 assets.
+
+    Returns the same keys as predict_asset() with backtest.accuracy = 0
+    (backtest details are not available in this fast path).
+    """
+    # 1. Fetch data
+    if asset_type == "crypto":
+        df = get_binance_history(symbol, days=730)
+    else:
+        df = get_yf_history(symbol, days=730)
+
+    if df.empty or len(df) < MIN_TRAIN_ROWS:
+        return _no_data_result(symbol)
+
+    # 2. Build features + target
+    df = build_features(df)
+    df["_future_close"] = df["close"].shift(-PREDICTION_HORIZON)
+    df["target"] = np.where(df["_future_close"].isna(), np.nan,
+                            (df["_future_close"] > df["close"]).astype(float))
+    df = df.drop(columns=["_future_close"])
+    df = df.dropna(subset=["target"] + [c for c in FEATURE_COLS if c in df.columns]).reset_index(drop=True)
+    df["target"] = df["target"].astype(int)
+
+    if len(df) < MIN_TRAIN_ROWS:
+        return _no_data_result(symbol)
+
+    feat_cols = [c for c in FEATURE_COLS if c in df.columns]
+
+    # 3. Train ONE model on ALL data (skip walk-forward backtest)
+    scaler   = StandardScaler()
+    X_all_s  = scaler.fit_transform(df[feat_cols].fillna(0))
+    y_all    = df["target"]
+    rf, gb, xgb = _train_ensemble(X_all_s, y_all.values)
+
+    # 4. Predict current row
+    X_current   = df[feat_cols].iloc[-1:].fillna(0)
+    X_current_s = scaler.transform(X_current)
+    ml_prob     = float(_ensemble_proba(rf, gb, xgb, X_current_s)[0])
+
+    current_row   = df.iloc[-1].to_dict()
+    score         = _composite_score(current_row, ml_prob)
+    current_price = float(df["close"].iloc[-1])
+
+    # Signal
+    if score >= 62:
+        signal, signal_color = "BUY",  "green"
+    elif score <= 38:
+        signal, signal_color = "SELL", "red"
+    else:
+        signal, signal_color = "HOLD", "yellow"
+
+    # Trend direction
+    sma50  = float(df["sma_50"].iloc[-1])  if "sma_50"  in df.columns else current_price
+    sma200 = float(df["sma_200"].iloc[-1]) if "sma_200" in df.columns else current_price
+    trend  = "Bullish" if current_price > sma50 > sma200 else (
+             "Bearish" if current_price < sma50 < sma200 else "Sideways")
+
+    # Indicators
+    rsi_val   = round(float(current_row.get("rsi_14", 50)), 1)
+    macd_bull = bool(current_row.get("macd_bullish", 0))
+    bb_pos    = round(float(current_row.get("bb_pos", 0.5)), 2)
+    vol_surge = float(current_row.get("vol_ratio", 1)) > 1.5
+
+    sma20  = float(df["sma_20"].iloc[-1]) if "sma_20" in df.columns else current_price
+
+    # change_24h from last 2 closes (already in memory — no extra network call)
+    raw_df = df  # df still has the processed rows
+    if len(raw_df) >= 2:
+        prev_close = float(raw_df["close"].iloc[-2])
+        change_24h = round(((current_price - prev_close) / prev_close * 100) if prev_close else 0.0, 2)
+    else:
+        change_24h = 0.0
+
+    return {
+        "symbol":            symbol,
+        "asset_type":        asset_type,
+        "signal":            signal,
+        "signal_color":      signal_color,
+        "score":             round(score, 1),
+        "ml_probability":    round(ml_prob * 100, 1),
+        "confidence":        round(max(abs(ml_prob - 0.5) * 2 * 100, 5), 1),
+        "current_price":     current_price,
+        "change_24h":        change_24h,
+        "trend":             trend,
+        "indicators": {
+            "rsi":             rsi_val,
+            "rsi_signal":      "Oversold" if rsi_val < 30 else ("Overbought" if rsi_val > 70 else "Neutral"),
+            "macd_bullish":    macd_bull,
+            "bb_position":     bb_pos,
+            "bb_signal":       "Near support" if bb_pos < 0.2 else ("Near resistance" if bb_pos > 0.8 else "Mid range"),
+            "golden_cross":    bool(current_row.get("golden_cross", 0)),
+            "volume_surge":    vol_surge,
+            "trend_strength":  "Strong" if float(current_row.get("adx", 20)) > 25 else "Weak",
+            "adx":             round(float(current_row.get("adx", 0)), 1),
+            "sma_20":          round(sma20, 6),
+            "sma_50":          round(sma50, 6),
+            "sma_200":         round(sma200, 6),
+        },
+        "backtest": {"accuracy": 0},   # fast path: no backtest computed
+    }
 
 
 def _no_data_result(symbol: str) -> dict:

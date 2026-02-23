@@ -5,6 +5,7 @@ Fetches OHLCV and quote data from Binance (crypto) and yfinance (stocks).
 All functions return pandas DataFrames or dicts for the predictor / routers.
 """
 
+import threading
 import requests
 import yfinance as yf
 import pandas as pd
@@ -16,10 +17,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 # In-memory cache: price quotes cached 60 s, history 300 s
+# NOTE: cachetools.TTLCache is NOT thread-safe; guard every read/write with _cache_lock.
 _price_cache = TTLCache(maxsize=500, ttl=60)
 _hist_cache  = TTLCache(maxsize=200, ttl=300)
+_cache_lock  = threading.Lock()   # protects both caches
 
 BINANCE_BASE = "https://api.binance.com/api/v3"
+# NOTE: yfinance ≥1.0 uses curl_cffi internally and rejects a custom requests.Session.
+# Per-request timeouts are not directly exposed; slow/delisted tickers are
+# handled by the scan-level 180-second timeout in routers/picks.py.
 
 
 # ─── Binance ──────────────────────────────────────────────────
@@ -27,8 +33,9 @@ BINANCE_BASE = "https://api.binance.com/api/v3"
 def get_binance_price(symbol: str) -> dict:
     """Return current ticker data for a single Binance symbol."""
     cache_key = f"binance_price_{symbol}"
-    if cache_key in _price_cache:
-        return _price_cache[cache_key]
+    with _cache_lock:
+        if cache_key in _price_cache:
+            return _price_cache[cache_key]
     try:
         ticker_r = requests.get(f"{BINANCE_BASE}/ticker/24hr", params={"symbol": f"{symbol}USDT"}, timeout=5)
         ticker_r.raise_for_status()
@@ -42,7 +49,8 @@ def get_binance_price(symbol: str) -> dict:
             "low_24h":     float(d["lowPrice"]),
             "market":      "crypto",
         }
-        _price_cache[cache_key] = result
+        with _cache_lock:
+            _price_cache[cache_key] = result
         return result
     except Exception as e:
         logger.warning(f"Binance price error {symbol}: {e}")
@@ -53,8 +61,9 @@ def get_binance_price(symbol: str) -> dict:
 def get_binance_history(symbol: str, days: int = 730) -> pd.DataFrame:
     """Return daily OHLCV history from Binance (max 1000 candles = ~2.7 years)."""
     cache_key = f"binance_hist_{symbol}_{days}"
-    if cache_key in _hist_cache:
-        return _hist_cache[cache_key]
+    with _cache_lock:
+        if cache_key in _hist_cache:
+            return _hist_cache[cache_key]
     try:
         end_ms   = int(datetime.utcnow().timestamp() * 1000)
         start_ms = int((datetime.utcnow() - timedelta(days=days)).timestamp() * 1000)
@@ -76,7 +85,8 @@ def get_binance_history(symbol: str, days: int = 730) -> pd.DataFrame:
         for col in ["open","high","low","close","volume"]:
             df[col] = pd.to_numeric(df[col])
         df = df.sort_values("date").reset_index(drop=True)
-        _hist_cache[cache_key] = df
+        with _cache_lock:
+            _hist_cache[cache_key] = df
         return df
     except Exception as e:
         logger.error(f"Binance history error {symbol}: {e}")
@@ -86,8 +96,9 @@ def get_binance_history(symbol: str, days: int = 730) -> pd.DataFrame:
 def get_all_binance_prices(symbols: list[str]) -> list[dict]:
     """Batch-fetch all 24h tickers from Binance in a single request."""
     cache_key = "binance_all_prices"
-    if cache_key in _price_cache:
-        return _price_cache[cache_key]
+    with _cache_lock:
+        if cache_key in _price_cache:
+            return _price_cache[cache_key]
     try:
         r = requests.get(f"{BINANCE_BASE}/ticker/24hr", timeout=10)
         r.raise_for_status()
@@ -109,7 +120,8 @@ def get_all_binance_prices(symbols: list[str]) -> list[dict]:
             else:
                 results.append({"symbol": sym, "price": 0, "change_24h": 0,
                                  "volume_24h": 0, "high_24h": 0, "low_24h": 0, "market": "crypto"})
-        _price_cache[cache_key] = results
+        with _cache_lock:
+            _price_cache[cache_key] = results
         return results
     except Exception as e:
         logger.error(f"Batch Binance prices error: {e}")
@@ -122,8 +134,9 @@ def get_all_binance_prices(symbols: list[str]) -> list[dict]:
 def get_yf_price(symbol: str, market: str = "us") -> dict:
     """Return current quote for a stock (or crypto via Yahoo ticker)."""
     cache_key = f"yf_price_{symbol}"
-    if cache_key in _price_cache:
-        return _price_cache[cache_key]
+    with _cache_lock:
+        if cache_key in _price_cache:
+            return _price_cache[cache_key]
     try:
         ticker = yf.Ticker(symbol)
         info   = ticker.fast_info
@@ -142,7 +155,8 @@ def get_yf_price(symbol: str, market: str = "us") -> dict:
             "low_24h":    float(hist["Low"].iloc[-1])  if len(hist) else price,
             "market":     market,
         }
-        _price_cache[cache_key] = result
+        with _cache_lock:
+            _price_cache[cache_key] = result
         return result
     except Exception as e:
         logger.warning(f"yfinance price error {symbol}: {e}")
@@ -153,8 +167,9 @@ def get_yf_price(symbol: str, market: str = "us") -> dict:
 def get_yf_history(symbol: str, days: int = 730) -> pd.DataFrame:
     """Return daily OHLCV from Yahoo Finance."""
     cache_key = f"yf_hist_{symbol}_{days}"
-    if cache_key in _hist_cache:
-        return _hist_cache[cache_key]
+    with _cache_lock:
+        if cache_key in _hist_cache:
+            return _hist_cache[cache_key]
     try:
         ticker = yf.Ticker(symbol)
         end    = datetime.today()
@@ -167,7 +182,8 @@ def get_yf_history(symbol: str, days: int = 730) -> pd.DataFrame:
         df = df.reset_index()
         df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
         df = df.sort_values("date").reset_index(drop=True)
-        _hist_cache[cache_key] = df
+        with _cache_lock:
+            _hist_cache[cache_key] = df
         return df
     except Exception as e:
         logger.error(f"yfinance history error {symbol}: {e}")

@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from routers import crypto, stocks, news
+from routers import crypto, stocks, news, picks
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(crypto.router, prefix="/api/crypto", tags=["Crypto"])
 app.include_router(stocks.router, prefix="/api/stocks", tags=["Stocks"])
 app.include_router(news.router,   prefix="/api/news",   tags=["News"])
+app.include_router(picks.router,  prefix="/api/picks",  tags=["Picks"])
 
 
 @app.get("/api/health")
