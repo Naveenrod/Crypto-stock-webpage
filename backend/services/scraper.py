@@ -10,6 +10,7 @@ Aggregates financial news from trusted RSS feeds:
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 import logging
 from cachetools import TTLCache
@@ -67,7 +68,11 @@ def _parse_date(entry) -> str:
 def _fetch_feed(source_name: str, url: str, max_items: int = 8) -> list[dict]:
     """Fetch a single RSS feed and return a list of news items."""
     try:
-        feed = feedparser.parse(url, request_headers=HEADERS)
+        # Use requests with explicit timeout so feeds can't hang indefinitely.
+        # feedparser.parse(url) has no timeout and will block forever on slow feeds.
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.content)
         items = []
         for entry in feed.entries[:max_items]:
             title   = entry.get("title", "").strip()
@@ -107,10 +112,19 @@ def get_news(category: str = "crypto", max_per_source: int = 6) -> list[dict]:
     else:
         feeds_to_fetch = RSS_FEEDS.get(category, RSS_FEEDS["crypto"])
 
+    # Fetch all feeds in parallel (I/O-bound) with a 25s total timeout.
+    # Sequential fetching could take minutes if any feed is slow/blocked.
     all_items = []
-    for source_name, url in feeds_to_fetch:
-        items = _fetch_feed(source_name, url, max_items=max_per_source)
-        all_items.extend(items)
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="news") as executor:
+        futures = {
+            executor.submit(_fetch_feed, name, url, max_per_source): name
+            for name, url in feeds_to_fetch
+        }
+        try:
+            for future in as_completed(futures, timeout=25):
+                all_items.extend(future.result())
+        except FuturesTimeoutError:
+            logger.warning("[news] Feed fetch hit 25s timeout; using partial results")
 
     # Sort by published (newest first)
     all_items.sort(key=lambda x: x.get("published", ""), reverse=True)
