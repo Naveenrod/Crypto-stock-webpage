@@ -134,9 +134,9 @@ def _build_all_picks() -> dict:
 
     # Use explicit lifecycle (not `with`) so shutdown(wait=False) can be called
     # after a timeout — this avoids blocking on yfinance calls that hang indefinitely.
-    # 8 workers: balanced for 512MB RAM environments (Render free tier).
+    # 16 workers: good balance for 1GB RAM (Fly.io shared-cpu-1x).
     # yfinance downloads release the GIL (I/O-bound) so threads still help.
-    executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="picks")
+    executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="picks")
     try:
         future_to_meta = {
             executor.submit(_safe_predict, sym, atype, cat): (sym, cat)
