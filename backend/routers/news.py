@@ -8,7 +8,7 @@ router = APIRouter()
 _VALID_CATEGORIES = Literal["all", "crypto", "us_stocks", "au_stocks"]
 
 
-@router.get("/")
+@router.get("")
 async def news_feed(
     category: _VALID_CATEGORIES = Query("all"),
 ):

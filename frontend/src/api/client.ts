@@ -132,7 +132,7 @@ export const fetchAUStockBacktest = (symbol: string) =>
   api.get<{ signals: BacktestPoint[] }>(`/stocks/au/${symbol}/backtest`).then(r => r.data.signals);
 
 export const fetchNews = (category = "all") =>
-  api.get<{ news: NewsItem[] }>(`/news/?category=${category}`).then(r => r.data.news);
+  api.get<{ news: NewsItem[] }>(`/news?category=${category}`).then(r => r.data.news);
 
 export const fetchAssetNews = (symbol: string, type: "crypto" | "us" | "au") => {
   const path = type === "crypto"
