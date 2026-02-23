@@ -134,9 +134,9 @@ def _build_all_picks() -> dict:
 
     # Use explicit lifecycle (not `with`) so shutdown(wait=False) can be called
     # after a timeout — this avoids blocking on yfinance calls that hang indefinitely.
-    # 32 workers: yfinance downloads release the GIL (I/O-bound),
-    # so extra threads improve throughput even on a GIL-limited interpreter.
-    executor = ThreadPoolExecutor(max_workers=32, thread_name_prefix="picks")
+    # 8 workers: balanced for 512MB RAM environments (Render free tier).
+    # yfinance downloads release the GIL (I/O-bound) so threads still help.
+    executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="picks")
     try:
         future_to_meta = {
             executor.submit(_safe_predict, sym, atype, cat): (sym, cat)
