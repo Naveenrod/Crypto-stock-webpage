@@ -5,7 +5,7 @@ Scans all 235 assets (70 crypto + 89 US stocks + 76 AU stocks) in parallel
 using the ML ensemble and returns the top-5 ranked by composite score for
 each category.
 
-First response: ~60-120 s (cold scan, 32-worker ThreadPoolExecutor, interleaved).
+First response: ~30-60 s (cold scan, 16-worker ThreadPoolExecutor, interleaved).
 Subsequent responses within 5 min: <1 s (TTLCache hit).
 """
 

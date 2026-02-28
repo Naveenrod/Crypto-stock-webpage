@@ -83,9 +83,7 @@ REVOLUT_CRYPTO = [
     "THETA","FIL","ICP","ETC","EGLD","RUNE","CAKE","ZRX","OMG","BAL",
     "GALA","IMX","APE","GMT","OP","ARB","PEPE","FLOKI","BONK","WIF",
     "SUI","INJ","TIA","JUP","RENDER","FET","AGIX","SEI","PYTH","TRX",
-    "XMR","KSM","IOTA","HOT","ZIL","COMP","SNX","ATOM","ALGO","VET",
-    "HBAR","EGLD","FLOW","KCS","HT","LEO","WOO","LDO","RPL","SSV",
-    "BLUR","ARB","OP","GMX","PENDLE","RDNT","CYBER","ID","HOOK","GAS",
+    "XMR","KSM","IOTA","HOT","ZIL",
 ]
 
 REVOLUT_US_STOCKS = [

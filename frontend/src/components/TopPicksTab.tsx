@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Trophy, RefreshCw, Cpu, Clock, CheckCircle,
@@ -218,8 +219,29 @@ function CategorySection({ title, emoji, picks, accentColor }: CategorySectionPr
   );
 }
 
+// ── Scanning stage messages (keyed by elapsed seconds) ───────────────────────
+const SCAN_STAGES: { threshold: number; msg: string }[] = [
+  { threshold:  0, msg: "Fetching live market prices..." },
+  { threshold:  5, msg: "Computing 36 technical indicators per asset..." },
+  { threshold: 15, msg: "Training Random Forest · Gradient Boosting · XGBoost..." },
+  { threshold: 35, msg: "Scoring and ranking 235 assets..." },
+  { threshold: 55, msg: "Finalising top picks — almost done..." },
+];
+
 // ── Scanning loader (shown on first cold scan) ────────────────────────────────
 function ScanningLoader() {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setElapsed(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Fills quickly at first, slows as it approaches 95% (never hits 100 until done)
+  const progress = Math.min(95, elapsed < 5 ? elapsed * 6 : 30 + (elapsed - 5) * 1.1);
+
+  const currentStage = SCAN_STAGES.filter(s => elapsed >= s.threshold).pop()!;
+
   return (
     <div className="flex flex-col items-center justify-center py-16 space-y-6">
       {/* Icon */}
@@ -230,15 +252,21 @@ function ScanningLoader() {
       {/* Message */}
       <div className="text-center space-y-1.5">
         <p className="text-white font-semibold text-lg">Scanning 235 assets with ML...</p>
-        <p className="text-sm text-muted">Running Random Forest · Gradient Boosting · XGBoost</p>
+        <p className="text-sm text-muted transition-all duration-500">{currentStage.msg}</p>
         <p className="text-xs text-muted/60">
-          First scan: ~30-60 s &nbsp;·&nbsp; Results cached for 5 min
+          {elapsed}s elapsed &nbsp;·&nbsp; Results cached for 5 min
         </p>
       </div>
 
-      {/* Animated shimmer bar */}
-      <div className="w-72 h-1.5 bg-surface rounded-full overflow-hidden">
-        <div className="h-full bg-accent rounded-full skeleton" style={{ width: "100%" }} />
+      {/* Dynamic progress bar */}
+      <div className="w-72 space-y-1.5">
+        <div className="w-full h-1.5 bg-surface rounded-full overflow-hidden">
+          <div
+            className="h-full bg-accent rounded-full transition-all duration-1000 ease-out"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+        <p className="text-xs text-muted/60 text-center tabular-nums">{Math.round(progress)}%</p>
       </div>
 
       {/* Skeleton grid */}
