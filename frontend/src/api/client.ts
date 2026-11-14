@@ -161,25 +161,27 @@ export interface TopPick {
   change_24h:        number;
   trend:             string;           // "Bullish" | "Bearish" | "Sideways"
   as_of?:            string;
-  backtest_accuracy: number | null;    // null when only the fast scan ran
+  backtest_accuracy: number | null;    // null when only the fast scan ran (0 from the old backend)
   indicators:        Indicators;
 }
 
 export interface TopPicksResult {
-  status:        "idle" | "scanning" | "ready" | "error";
-  progress:      { done: number; total: number; ok: number };
-  partial:       boolean;              // lists come from a scan still in progress
+  // status/progress/partial/total_assets/stale are optional only so the UI keeps
+  // working if it is deployed ahead of the backend that provides them.
+  status?:       "idle" | "scanning" | "ready" | "error";
+  progress?:     { done: number; total: number; ok: number };
+  partial?:      boolean;              // lists come from a scan still in progress
   crypto:        TopPick[];
   us_stocks:     TopPick[];
   au_stocks:     TopPick[];
   computed_at:   string | null;
   total_scanned: number;
-  total_assets:  number;
+  total_assets?: number;
   ttl_seconds:   number;
   from_cache:    boolean;
-  stale:         boolean;
-  refresh_started:      boolean;
-  refresh_available_in: number | null;
+  stale?:        boolean;
+  refresh_started?:      boolean;
+  refresh_available_in?: number | null;
 }
 
 /** Never blocks on the server: returns progress + whatever is ranked so far. */

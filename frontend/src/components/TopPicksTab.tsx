@@ -220,11 +220,16 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
     );
   }
 
+  // Tolerate the previous backend's response shape (no status/progress fields)
+  // so a frontend deploy that lands before the backend one still renders.
   const scanning = data.status === "scanning";
-  const { done, total } = data.progress;
+  const { done, total } = data.progress ?? { done: 0, total: 0, ok: 0 };
+  const partial = data.partial ?? false;
+  const totalAssets = data.total_assets ?? data.total_scanned ?? 0;
   const pct = total ? Math.round((done / total) * 100) : 0;
   const mins = minutesAgo(data.computed_at);
-  const asOf = [...data.crypto, ...data.us_stocks, ...data.au_stocks].find(p => p.as_of)?.as_of;
+  const picks = { crypto: data.crypto ?? [], us: data.us_stocks ?? [], au: data.au_stocks ?? [] };
+  const asOf = [...picks.crypto, ...picks.us, ...picks.au].find(p => p.as_of)?.as_of;
   const refreshDenied = rescan.data?.refresh_available_in ?? null;
 
   return (
@@ -239,17 +244,17 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
             <h2 className="font-semibold text-fg leading-tight">Top 5 ML picks</h2>
             <p className="text-xs text-muted">
               {scanning
-                ? data.partial
+                ? partial
                   ? <>Scanning {done} of {total} assets — results appear as they're ranked</>
                   : <>Refreshing in the background ({done}/{total}) — showing the previous results meanwhile</>
-                : <>{data.total_scanned} of {data.total_assets} assets ranked by composite score{asOf && <> · candles to {fmtDate(asOf)}</>}</>}
+                : <>{data.total_scanned} of {totalAssets} assets ranked by composite score{asOf && <> · candles to {fmtDate(asOf)}</>}</>}
             </p>
           </div>
 
           <div className="flex items-center gap-2 text-xs">
             {!scanning && data.computed_at && (
               <span className="inline-flex items-center gap-1.5 text-muted">
-                {data.stale ? <Clock className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5 text-success" />}
+                {(data.stale ?? false) ? <Clock className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5 text-success" />}
                 {mins === 0 ? "just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`}
               </span>
             )}
@@ -281,9 +286,9 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
 
       {/* Picks */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
-        <CategorySection title="Crypto"    emoji="₿"  picks={data.crypto}    market="crypto" scanning={scanning && data.partial} onOpen={onOpenAsset} />
-        <CategorySection title="US stocks" emoji="🇺🇸" picks={data.us_stocks} market="us"     scanning={scanning && data.partial} onOpen={onOpenAsset} />
-        <CategorySection title="AU stocks" emoji="🇦🇺" picks={data.au_stocks} market="au"     scanning={scanning && data.partial} onOpen={onOpenAsset} />
+        <CategorySection title="Crypto"    emoji="₿"  picks={picks.crypto} market="crypto" scanning={scanning && partial} onOpen={onOpenAsset} />
+        <CategorySection title="US stocks" emoji="🇺🇸" picks={picks.us}     market="us"     scanning={scanning && partial} onOpen={onOpenAsset} />
+        <CategorySection title="AU stocks" emoji="🇦🇺" picks={picks.au}     market="au"     scanning={scanning && partial} onOpen={onOpenAsset} />
       </div>
 
       <p className="text-center text-[11px] text-muted pb-2">
