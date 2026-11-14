@@ -3,30 +3,56 @@ Prediction & Backtesting Engine
 ────────────────────────────────
 Algorithm:
   1. Compute 30+ technical indicators (trend, momentum, volatility, volume)
-  2. Engineer features (ratios, crossovers, z-scores)
-  3. Train an Ensemble: RandomForest + GradientBoosting + XGBoost
-  4. Walk-forward backtest: train on t-2yr→t-7d, test on t-7d→t
+  2. Train an ensemble: RandomForest + HistGradientBoosting + XGBoost
+  3. Purged walk-forward backtest over the last 90 labelled rows
+     (re-train every 15 rows; the 7 rows whose labels overlap the test
+     fold are excluded from training so no future prices leak in)
+  4. Train a final model on every labelled row and score the LATEST candle
   5. Report accuracy, precision, profit factor and a composite score 0-100
+
+Design notes
+  • One analyze_asset() call produces BOTH the prediction and the backtest
+    signal history. Results are cached per symbol (default 1 h — the inputs
+    are daily candles, so re-training every few minutes is wasted CPU).
+  • Concurrent requests for the same symbol share one computation.
+  • quick_predict_asset() is the fast path used by the Top-Picks scan
+    (one training pass, no walk-forward).
 
 Note: Financial markets are inherently uncertain. No model can guarantee
 accuracy. Backtested accuracy reflects HISTORICAL performance only.
 """
 
+import os
+import threading
+import warnings
+import logging
+from typing import Callable
+
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from cachetools import TTLCache
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from xgboost import XGBClassifier
-import warnings
-import logging
+
 from services.data_fetcher import get_binance_history, get_yf_history
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
-PREDICTION_HORIZON = 7   # days ahead
+PREDICTION_HORIZON = 7      # days ahead
 MIN_TRAIN_ROWS     = 200
+WALK_FORWARD_ROWS  = 90     # size of the out-of-sample window
+WALK_FORWARD_STEP  = 15     # re-train every N rows (→ 6 folds)
+HISTORY_DAYS       = 730
+ANALYSIS_TTL       = int(os.getenv("ANALYSIS_TTL_SECONDS", "3600"))
+
+# Full analyses (prediction + signals) and quick predictions, keyed by symbol.
+_analysis_cache: TTLCache = TTLCache(maxsize=600, ttl=ANALYSIS_TTL)
+_quick_cache:    TTLCache = TTLCache(maxsize=600, ttl=ANALYSIS_TTL)
+_cache_lock = threading.Lock()
+_inflight: dict[str, threading.Event] = {}
 
 
 # ─── Feature engineering ─────────────────────────────────────
@@ -64,25 +90,19 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     low    = df["low"]
     volume = df["volume"]
 
-    # ── Returns ──────────────────────────────────────────────
     for n in [1, 3, 5, 10, 20]:
         df[f"ret_{n}d"] = close.pct_change(n)
 
-    # ── Moving averages ───────────────────────────────────────
     for w in [10, 20, 50, 100, 200]:
-        df[f"sma_{w}"]  = close.rolling(w).mean()
-        df[f"ema_{w}"]  = close.ewm(span=w, adjust=False).mean()
-
-    # Price vs MA ratios
+        df[f"sma_{w}"] = close.rolling(w).mean()
+        df[f"ema_{w}"] = close.ewm(span=w, adjust=False).mean()
     for w in [10, 20, 50, 100, 200]:
         df[f"price_sma{w}_ratio"] = close / df[f"sma_{w}"]
         df[f"price_ema{w}_ratio"] = close / df[f"ema_{w}"]
 
-    # MA crossover signals
     df["golden_cross"]    = (df["sma_50"] > df["sma_200"]).astype(int)
     df["ema_cross_12_26"] = (df["ema_10"] > df["ema_20"]).astype(int)
 
-    # ── MACD ──────────────────────────────────────────────────
     ema12             = close.ewm(span=12, adjust=False).mean()
     ema26             = close.ewm(span=26, adjust=False).mean()
     df["macd"]        = ema12 - ema26
@@ -90,18 +110,15 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["macd_hist"]   = df["macd"] - df["macd_signal"]
     df["macd_bullish"]= (df["macd"] > df["macd_signal"]).astype(int)
 
-    # ── RSI ───────────────────────────────────────────────────
     df["rsi_14"] = _compute_rsi(close, 14)
     df["rsi_7"]  = _compute_rsi(close, 7)
     df["rsi_21"] = _compute_rsi(close, 21)
-    df["rsi_oversold"]    = (df["rsi_14"] < 30).astype(int)
-    df["rsi_overbought"]  = (df["rsi_14"] > 70).astype(int)
+    df["rsi_oversold"]   = (df["rsi_14"] < 30).astype(int)
+    df["rsi_overbought"] = (df["rsi_14"] > 70).astype(int)
 
-    # ── Stochastic ────────────────────────────────────────────
     df["stoch_k"], df["stoch_d"] = _compute_stoch(high, low, close)
     df["stoch_bullish"] = (df["stoch_k"] > df["stoch_d"]).astype(int)
 
-    # ── Bollinger Bands ───────────────────────────────────────
     bb_mid          = close.rolling(20).mean()
     bb_std          = close.rolling(20).std()
     df["bb_upper"]  = bb_mid + 2 * bb_std
@@ -110,22 +127,17 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["bb_pos"]    = (close - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"] + 1e-10)
     df["bb_squeeze"] = (df["bb_width"] < df["bb_width"].rolling(20).mean()).astype(int)
 
-    # ── ATR & Volatility ──────────────────────────────────────
-    df["atr_14"]    = _compute_atr(high, low, close, 14)
-    df["atr_pct"]   = df["atr_14"] / close
-    df["volatility_20d"] = close.pct_change().rolling(20).std()
+    df["atr_14"]  = _compute_atr(high, low, close, 14)
+    df["atr_pct"] = df["atr_14"] / close
+    df["volatility_20d"]   = close.pct_change().rolling(20).std()
     df["volatility_ratio"] = df["volatility_20d"] / df["volatility_20d"].rolling(50).mean()
 
-    # ── Volume ────────────────────────────────────────────────
     vol_ma          = volume.rolling(20).mean()
     df["vol_ratio"] = volume / (vol_ma + 1e-10)
     df["vol_trend"] = (volume > vol_ma).astype(int)
-    # OBV
     obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
     df["obv_trend"] = (obv > obv.rolling(20).mean()).astype(int)
 
-    # ── Trend strength ────────────────────────────────────────
-    # Simple ADX proxy using smoothed +DM/-DM
     up_move   = high.diff()
     down_move = -(low.diff())
     plus_dm   = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
@@ -137,16 +149,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["adx"] = dx.rolling(14).mean()
     df["trend_strong"] = (df["adx"] > 25).astype(int)
 
-    # ── Williams %R ───────────────────────────────────────────
     df["williams_r"] = (high.rolling(14).max() - close) / \
                        (high.rolling(14).max() - low.rolling(14).min() + 1e-10) * -100
-
-    # ── Pattern: consecutive up/down days ─────────────────────
     df["streak"] = close.diff().apply(np.sign).rolling(5).sum()
-
-    # ── Z-score of price ──────────────────────────────────────
     df["price_zscore"] = (close - close.rolling(50).mean()) / (close.rolling(50).std() + 1e-10)
-
     return df
 
 
@@ -167,399 +173,333 @@ FEATURE_COLS = [
 # ─── Model training ──────────────────────────────────────────
 
 def _train_ensemble(X_train, y_train):
-    rf  = RandomForestClassifier(n_estimators=200, max_depth=8, min_samples_leaf=5,
-                                  random_state=42, n_jobs=1)   # n_jobs=1: avoids CPU oversubscription in ThreadPoolExecutor
-    gb  = GradientBoostingClassifier(n_estimators=150, max_depth=4, learning_rate=0.05,
-                                      random_state=42)
+    """
+    RF (100 trees) + HistGradientBoosting + XGBoost(hist).
+    ~3x cheaper than the previous RF200 + sklearn GradientBoosting + XGB with
+    the same feature set; single-threaded so concurrent fits don't oversubscribe.
+    """
+    rf  = RandomForestClassifier(n_estimators=100, max_depth=8, min_samples_leaf=5,
+                                 random_state=42, n_jobs=1)
+    hgb = HistGradientBoostingClassifier(max_iter=150, max_depth=4, learning_rate=0.05,
+                                         random_state=42)
     xgb = XGBClassifier(n_estimators=150, max_depth=5, learning_rate=0.05,
-                         use_label_encoder=False, eval_metric="logloss",
-                         random_state=42, verbosity=0)
+                        tree_method="hist", n_jobs=1, eval_metric="logloss",
+                        random_state=42, verbosity=0)
     rf.fit(X_train, y_train)
-    gb.fit(X_train, y_train)
+    hgb.fit(X_train, y_train)
     xgb.fit(X_train, y_train)
-    return rf, gb, xgb
+    return rf, hgb, xgb
 
 
-def _ensemble_proba(rf, gb, xgb, X):
+def _ensemble_proba(rf, hgb, xgb, X):
     p_rf  = rf.predict_proba(X)[:, 1]
-    p_gb  = gb.predict_proba(X)[:, 1]
+    p_gb  = hgb.predict_proba(X)[:, 1]
     p_xgb = xgb.predict_proba(X)[:, 1]
-    return (p_rf * 0.35 + p_gb * 0.30 + p_xgb * 0.35)
+    return p_rf * 0.35 + p_gb * 0.30 + p_xgb * 0.35
 
 
 # ─── Composite score (0-100) ─────────────────────────────────
 
-def _composite_score(row, ml_prob: float) -> float:
+def _composite_score(row, ml_prob: float) -> tuple[float, list[dict]]:
     """
     Combine ML probability with technical indicator alignment.
-    Returns a score 0-100 (>60 = bullish, <40 = bearish, 40-60 = neutral).
+    Returns (score 0-100, breakdown) — >=62 BUY, <=38 SELL, otherwise HOLD.
     """
-    score = ml_prob * 50   # ML contributes up to 50 points
+    parts: list[dict] = []
 
-    # RSI (0-10 pts)
+    def add(label, pts, max_pts):
+        parts.append({"label": label, "points": round(pts, 1), "max": max_pts})
+
+    add("ML probability", ml_prob * 50, 50)
+
     rsi = row.get("rsi_14", 50)
-    if rsi < 30:   score += 8   # oversold → likely bounce
-    elif rsi < 45: score += 5
-    elif rsi > 70: score -= 5   # overbought
-    else:          score += 3
+    if rsi < 30:   add("RSI", 8, 8)
+    elif rsi < 45: add("RSI", 5, 8)
+    elif rsi > 70: add("RSI", -5, 8)
+    else:          add("RSI", 3, 8)
 
-    # MACD (0-10 pts)
-    if row.get("macd_bullish", 0): score += 7
-    if row.get("macd_hist", 0) > 0: score += 3
+    macd_pts = (7 if row.get("macd_bullish", 0) else 0) + (3 if row.get("macd_hist", 0) > 0 else 0)
+    add("MACD", macd_pts, 10)
 
-    # BB position (0-10 pts)
     bb = row.get("bb_pos", 0.5)
-    if bb < 0.2:   score += 8   # near lower band
-    elif bb > 0.8: score -= 3
-    else:          score += 3
+    if bb < 0.2:   add("Bollinger position", 8, 8)
+    elif bb > 0.8: add("Bollinger position", -3, 8)
+    else:          add("Bollinger position", 3, 8)
 
-    # Golden cross (0-10 pts)
-    if row.get("golden_cross", 0): score += 8
+    add("Golden cross", 8 if row.get("golden_cross", 0) else 0, 8)
+    add("Volume", (3 if row.get("vol_trend", 0) else 0) + (2 if row.get("obv_trend", 0) else 0), 5)
+    add("Trend strength", (3 if row.get("trend_strong", 0) else 0) + (2 if row.get("streak", 0) > 0 else 0), 5)
 
-    # Volume (0-5 pts)
-    if row.get("vol_trend", 0): score += 3
-    if row.get("obv_trend", 0): score += 2
-
-    # Trend strength (0-5 pts)
-    if row.get("trend_strong", 0): score += 3
-    if row.get("streak", 0) > 0:   score += 2
-
-    return max(0.0, min(100.0, score))
+    score = sum(p["points"] for p in parts)
+    return max(0.0, min(100.0, score)), parts
 
 
-# ─── Main predict function ───────────────────────────────────
+def _signal_for(score: float) -> tuple[str, str]:
+    if score >= 62:
+        return "BUY", "green"
+    if score <= 38:
+        return "SELL", "red"
+    return "HOLD", "yellow"
 
-def predict_asset(symbol: str, asset_type: str = "crypto") -> dict:
-    """
-    Full prediction pipeline:
-      • Fetch 2-year history
-      • Build features
-      • Walk-forward backtest (train on -2yr→-7d, test on -7d→today)
-      • Predict next 7 days with the same model
-      • Return structured prediction dict
-    """
-    # 1. Fetch data
+
+# ─── Data preparation ────────────────────────────────────────
+
+def _fetch(symbol: str, asset_type: str) -> pd.DataFrame:
     if asset_type == "crypto":
-        df = get_binance_history(symbol, days=730)
-    else:
-        df = get_yf_history(symbol, days=730)
+        return get_binance_history(symbol, days=HISTORY_DAYS)
+    return get_yf_history(symbol, days=HISTORY_DAYS)
 
-    if df.empty or len(df) < MIN_TRAIN_ROWS:
-        return _no_data_result(symbol)
 
-    # 2. Build features
-    df = build_features(df)
-    # IMPORTANT: shift(-N) produces NaN for last N rows; NaN > x = False in pandas,
-    # which would silently corrupt the target. Explicitly mark those rows as NaN
-    # and drop them so they never pollute training or backtest metrics.
-    df["_future_close"] = df["close"].shift(-PREDICTION_HORIZON)
-    df["target"] = np.where(df["_future_close"].isna(), np.nan,
-                            (df["_future_close"] > df["close"]).astype(float))
-    df = df.drop(columns=["_future_close"])
-    df = df.dropna(subset=["target"] + [c for c in FEATURE_COLS if c in df.columns]).reset_index(drop=True)
-    df["target"] = df["target"].astype(int)
+def _prepare(df: pd.DataFrame):
+    """
+    Returns (train_df, latest_row, feat_cols) or None when there isn't enough data.
 
-    if len(df) < MIN_TRAIN_ROWS:
-        return _no_data_result(symbol)
+    train_df   – rows whose 7-day-ahead outcome is already known (the label)
+    latest_row – the most recent candle, which has NO label yet. This is the
+                 row we score for the live prediction.
+    """
+    feat = build_features(df)
+    feat_cols = [c for c in FEATURE_COLS if c in feat.columns]
 
-    feat_cols = [c for c in FEATURE_COLS if c in df.columns]
+    future = feat["close"].shift(-PREDICTION_HORIZON)
+    feat["fwd_ret"] = future / feat["close"] - 1.0
+    feat["target"]  = np.where(future.isna(), np.nan, (future > feat["close"]).astype(float))
 
-    # 3. Walk-forward backtest over last 90 rows (re-train every 15 steps)
-    #    This gives ~6 mini-folds and a much more reliable accuracy estimate.
-    wf_preds, wf_true = [], []
-    wf_returns = []
-    wf_window  = max(MIN_TRAIN_ROWS, len(df) - 90)
+    latest = feat.iloc[-1]
+    if latest[feat_cols].isna().any():
+        return None
 
-    step = 15
-    for fold_start in range(wf_window, len(df), step):
-        fold_end = min(fold_start + step, len(df))
-        X_tr = df[feat_cols].iloc[:fold_start].fillna(0)
-        y_tr = df["target"].iloc[:fold_start]
-        X_te = df[feat_cols].iloc[fold_start:fold_end].fillna(0)
-        y_te = df["target"].iloc[fold_start:fold_end].values
-        if len(y_tr.unique()) < 2 or len(y_te) == 0:
+    train = feat.dropna(subset=["target"] + feat_cols).reset_index(drop=True)
+    if len(train) < MIN_TRAIN_ROWS:
+        return None
+    train["target"] = train["target"].astype(int)
+    return train, latest, feat_cols
+
+
+def _fmt_date(value) -> str:
+    try:
+        return pd.Timestamp(value).strftime("%Y-%m-%d")
+    except Exception:
+        return str(value)[:10]
+
+
+def _indicators(row: pd.Series, current_price: float) -> dict:
+    rsi_val = round(float(row.get("rsi_14", 50)), 1)
+    bb_pos  = round(float(row.get("bb_pos", 0.5)), 2)
+    sma20   = float(row.get("sma_20", current_price))
+    sma50   = float(row.get("sma_50", current_price))
+    sma200  = float(row.get("sma_200", current_price))
+    return {
+        "rsi":            rsi_val,
+        "rsi_signal":     "Oversold" if rsi_val < 30 else ("Overbought" if rsi_val > 70 else "Neutral"),
+        "macd_bullish":   bool(row.get("macd_bullish", 0)),
+        "bb_position":    bb_pos,
+        "bb_signal":      "Near support" if bb_pos < 0.2 else ("Near resistance" if bb_pos > 0.8 else "Mid range"),
+        "golden_cross":   bool(row.get("golden_cross", 0)),
+        "volume_surge":   float(row.get("vol_ratio", 1)) > 1.5,
+        "trend_strength": "Strong" if float(row.get("adx", 20)) > 25 else "Weak",
+        "adx":            round(float(row.get("adx", 0)), 1),
+        "sma_20":         round(sma20, 6),
+        "sma_50":         round(sma50, 6),
+        "sma_200":        round(sma200, 6),
+    }
+
+
+def _trend(current_price: float, row: pd.Series) -> str:
+    sma50  = float(row.get("sma_50", current_price))
+    sma200 = float(row.get("sma_200", current_price))
+    if current_price > sma50 > sma200:
+        return "Bullish"
+    if current_price < sma50 < sma200:
+        return "Bearish"
+    return "Sideways"
+
+
+# ─── Caching helpers ─────────────────────────────────────────
+
+def _cached(cache: TTLCache, key: str, compute: Callable[[], dict]) -> dict:
+    """Return cache[key], computing it at most once even under concurrent requests."""
+    while True:
+        with _cache_lock:
+            if key in cache:
+                return cache[key]
+            waiter = _inflight.get(key)
+            if waiter is None:
+                waiter = threading.Event()
+                _inflight[key] = waiter
+                owner = True
+            else:
+                owner = False
+        if not owner:
+            waiter.wait(timeout=600)
             continue
-        sc_ = StandardScaler()
-        X_tr_s = sc_.fit_transform(X_tr)
-        X_te_s = sc_.transform(X_te)
-        rf_, gb_, xgb_ = _train_ensemble(X_tr_s, y_tr.values)
-        proba_ = _ensemble_proba(rf_, gb_, xgb_, X_te_s)
-        pred_  = (proba_ >= 0.5).astype(int)
-        wf_preds.extend(pred_.tolist())
+        try:
+            result = compute()
+            with _cache_lock:
+                cache[key] = result
+            return result
+        finally:
+            with _cache_lock:
+                _inflight.pop(key, None)
+            waiter.set()
+
+
+def cached_analysis(symbol: str) -> dict | None:
+    with _cache_lock:
+        return _analysis_cache.get(symbol)
+
+
+# ─── Full analysis (prediction + walk-forward backtest) ──────
+
+def analyze_asset(symbol: str, asset_type: str = "crypto") -> dict:
+    return _cached(_analysis_cache, f"{asset_type}:{symbol}", lambda: _analyze(symbol, asset_type))
+
+
+def _analyze(symbol: str, asset_type: str) -> dict:
+    df = _fetch(symbol, asset_type)
+    if df.empty or len(df) < MIN_TRAIN_ROWS:
+        return {"prediction": _no_data_result(symbol), "signals": []}
+    prepared = _prepare(df)
+    if prepared is None:
+        return {"prediction": _no_data_result(symbol), "signals": []}
+    train, latest, feat_cols = prepared
+
+    # ── Purged walk-forward backtest over the last WALK_FORWARD_ROWS rows ──
+    signals: list[dict] = []
+    wf_preds, wf_true, wf_fwd = [], [], []
+    wf_start = max(MIN_TRAIN_ROWS, len(train) - WALK_FORWARD_ROWS)
+    for fold_start in range(wf_start, len(train), WALK_FORWARD_STEP):
+        fold_end  = min(fold_start + WALK_FORWARD_STEP, len(train))
+        train_end = fold_start - PREDICTION_HORIZON          # purge overlapping labels
+        if train_end < MIN_TRAIN_ROWS // 2:
+            continue
+        X_tr = train[feat_cols].iloc[:train_end].fillna(0)
+        y_tr = train["target"].iloc[:train_end].values
+        if len(np.unique(y_tr)) < 2:
+            continue
+        X_te = train[feat_cols].iloc[fold_start:fold_end].fillna(0)
+        y_te = train["target"].iloc[fold_start:fold_end].values
+        sc = StandardScaler()
+        models = _train_ensemble(sc.fit_transform(X_tr), y_tr)
+        proba  = _ensemble_proba(*models, sc.transform(X_te))
+        preds  = (proba >= 0.5).astype(int)
+        wf_preds.extend(preds.tolist())
         wf_true.extend(y_te.tolist())
-        # daily return when model says BUY (1) or we hold (0)
-        rets_ = df["ret_1d"].iloc[fold_start:fold_end].values
-        wf_returns.extend([(p, r) for p, r in zip(pred_, rets_)])
+        wf_fwd.extend(train["fwd_ret"].iloc[fold_start:fold_end].tolist())
+        for j, idx in enumerate(range(fold_start, fold_end)):
+            signals.append({
+                "date":    _fmt_date(train["date"].iloc[idx]),
+                "price":   round(float(train["close"].iloc[idx]), 6),
+                "signal":  "BUY" if preds[j] == 1 else "SELL",
+                "correct": bool(preds[j] == y_te[j]),
+                "prob":    round(float(proba[j]) * 100, 1),
+            })
 
-    wf_preds = np.array(wf_preds)
-    wf_true  = np.array(wf_true)
-
-    if len(wf_preds) > 0:
-        acc       = float(accuracy_score(wf_true, wf_preds))
-        precision = float(precision_score(wf_true, wf_preds, zero_division=0))
-        recall    = float(recall_score(wf_true, wf_preds, zero_division=0))
-        f1        = float(f1_score(wf_true, wf_preds, zero_division=0))
-        # Profit factor: gross profit on BUY-signal wins / gross loss on BUY-signal losses
-        buy_rets      = [r for p, r in wf_returns if p == 1]
-        gross_profit  = sum(r for r in buy_rets if r > 0) if buy_rets else 0
-        gross_loss    = abs(sum(r for r in buy_rets if r < 0)) if buy_rets else 1e-6
-        profit_factor = round(gross_profit / max(gross_loss, 1e-6), 2)
-        profit_factor = min(profit_factor, 20.0)   # cap at 20× for display
-        test_size     = len(wf_preds)
+    wf_preds_a = np.array(wf_preds)
+    wf_true_a  = np.array(wf_true)
+    if len(wf_preds_a):
+        acc       = float(accuracy_score(wf_true_a, wf_preds_a))
+        precision = float(precision_score(wf_true_a, wf_preds_a, zero_division=0))
+        recall    = float(recall_score(wf_true_a, wf_preds_a, zero_division=0))
+        f1        = float(f1_score(wf_true_a, wf_preds_a, zero_division=0))
+        buy_rets  = [r for p, r in zip(wf_preds, wf_fwd) if p == 1 and r == r]
+        gross_profit = sum(r for r in buy_rets if r > 0)
+        gross_loss   = abs(sum(r for r in buy_rets if r < 0))
+        profit_factor = min(round(gross_profit / max(gross_loss, 1e-6), 2), 20.0) if buy_rets else 1.0
+        test_size = len(wf_preds_a)
+        correct   = int((wf_preds_a == wf_true_a).sum())
     else:
         acc = precision = recall = f1 = 0.5
-        profit_factor = 1.0
-        test_size = 0
+        profit_factor, test_size, correct = 1.0, 0, 0
 
-    # 4. Train final model on ALL data for the live prediction
+    # ── Final model on every labelled row → score the latest candle ──
     scaler = StandardScaler()
-    X_all_s = scaler.fit_transform(df[feat_cols].fillna(0))
-    y_all   = df["target"]
-    rf, gb, xgb = _train_ensemble(X_all_s, y_all.values)
+    models = _train_ensemble(scaler.fit_transform(train[feat_cols].fillna(0)), train["target"].values)
+    X_latest = scaler.transform(latest[feat_cols].astype(float).to_frame().T.fillna(0))
+    ml_prob  = float(_ensemble_proba(*models, X_latest)[0])
 
-    # 5. Predict current
-    X_current   = df[feat_cols].iloc[-1:].fillna(0)
-    X_current_s = scaler.transform(X_current)
-    ml_prob     = float(_ensemble_proba(rf, gb, xgb, X_current_s)[0])
+    prediction = _build_prediction(symbol, asset_type, latest, ml_prob)
+    prediction["backtest"] = {
+        "period_days":   test_size,
+        "accuracy":      round(acc * 100, 1),
+        "precision":     round(precision * 100, 1),
+        "recall":        round(recall * 100, 1),
+        "f1_score":      round(f1 * 100, 1),
+        "profit_factor": profit_factor,
+        "total_signals": test_size,
+        "correct":       correct,
+    }
+    return {"prediction": prediction, "signals": signals[-60:]}
 
-    current_row = df.iloc[-1].to_dict()
-    score       = _composite_score(current_row, ml_prob)
 
-    # Signal
-    if score >= 62:
-        signal = "BUY"
-        signal_color = "green"
-    elif score <= 38:
-        signal = "SELL"
-        signal_color = "red"
-    else:
-        signal = "HOLD"
-        signal_color = "yellow"
-
-    # Price targets (based on ATR)
-    current_price = float(df["close"].iloc[-1])
-    atr           = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else current_price * 0.02
-    target_up     = round(current_price + 1.5 * atr, 6)
-    target_down   = round(current_price - 1.0 * atr, 6)
-    stop_loss     = round(current_price - 2.0 * atr, 6)
-
-    # Trend direction
-    sma20   = float(df["sma_20"].iloc[-1])  if "sma_20"  in df.columns else current_price
-    sma50   = float(df["sma_50"].iloc[-1])  if "sma_50"  in df.columns else current_price
-    sma200  = float(df["sma_200"].iloc[-1]) if "sma_200" in df.columns else current_price
-    trend   = "Bullish" if current_price > sma50 > sma200 else (
-              "Bearish" if current_price < sma50 < sma200 else "Sideways")
-
-    # Indicator summary
-    rsi_val   = round(float(current_row.get("rsi_14", 50)), 1)
-    macd_bull = bool(current_row.get("macd_bullish", 0))
-    bb_pos    = round(float(current_row.get("bb_pos", 0.5)), 2)
-    vol_surge = float(current_row.get("vol_ratio", 1)) > 1.5
-
+def _build_prediction(symbol: str, asset_type: str, latest: pd.Series, ml_prob: float) -> dict:
+    row = latest.to_dict()
+    score, breakdown = _composite_score(row, ml_prob)
+    signal, color = _signal_for(score)
+    current_price = float(latest["close"])
+    atr = float(row.get("atr_14", current_price * 0.02)) or current_price * 0.02
     return {
-        "symbol":            symbol,
-        "asset_type":        asset_type,
-        "signal":            signal,
-        "signal_color":      signal_color,
-        "score":             round(score, 1),
-        "ml_probability":    round(ml_prob * 100, 1),
-        "confidence":        round(max(abs(ml_prob - 0.5) * 2 * 100, 5), 1),
-        "current_price":     current_price,
-        "target_price_up":   target_up,
-        "target_price_down": target_down,
-        "stop_loss":         stop_loss,
-        "trend":             trend,
+        "symbol":             symbol,
+        "asset_type":         asset_type,
+        "as_of":              _fmt_date(latest["date"]),
+        "signal":             signal,
+        "signal_color":       color,
+        "score":              round(score, 1),
+        "score_breakdown":    breakdown,
+        "ml_probability":     round(ml_prob * 100, 1),
+        "confidence":         round(max(abs(ml_prob - 0.5) * 2 * 100, 5), 1),
+        "current_price":      current_price,
+        "change_24h":         round(float(row.get("ret_1d", 0.0)) * 100, 2),
+        "target_price_up":    round(current_price + 1.5 * atr, 6),
+        "target_price_down":  round(current_price - 1.0 * atr, 6),
+        "stop_loss":          round(current_price - 2.0 * atr, 6),
+        "trend":              _trend(current_price, latest),
         "prediction_horizon": f"{PREDICTION_HORIZON} days",
-        "indicators": {
-            "rsi":              rsi_val,
-            "rsi_signal":       "Oversold" if rsi_val < 30 else ("Overbought" if rsi_val > 70 else "Neutral"),
-            "macd_bullish":     macd_bull,
-            "bb_position":      bb_pos,
-            "bb_signal":        "Near support" if bb_pos < 0.2 else ("Near resistance" if bb_pos > 0.8 else "Mid range"),
-            "golden_cross":     bool(current_row.get("golden_cross", 0)),
-            "volume_surge":     vol_surge,
-            "trend_strength":   "Strong" if float(current_row.get("adx", 20)) > 25 else "Weak",
-            "adx":              round(float(current_row.get("adx", 0)), 1),
-            "sma_20":           round(sma20, 6),
-            "sma_50":           round(sma50, 6),
-            "sma_200":          round(sma200, 6),
-        },
-        "backtest": {
-            "period_days":    test_size,
-            "accuracy":       round(acc * 100, 1),
-            "precision":      round(precision * 100, 1),
-            "recall":         round(recall * 100, 1),
-            "f1_score":       round(f1 * 100, 1),
-            "profit_factor":  profit_factor,
-            "total_signals":  int(len(wf_preds)) if len(wf_preds) > 0 else 0,
-            "correct":        int((wf_preds == wf_true).sum()) if len(wf_preds) > 0 else 0,
-        },
+        "indicators":         _indicators(latest, current_price),
+        "backtest":           {},
         "disclaimer": "Predictions are based on historical patterns and do not guarantee future returns. Always do your own research.",
     }
 
 
-# ─── Historical backtest for UI chart ────────────────────────
+# ─── Public API used by the routers ──────────────────────────
+
+def predict_asset(symbol: str, asset_type: str = "crypto") -> dict:
+    """Full prediction (with walk-forward backtest metrics) for the detail view."""
+    return analyze_asset(symbol, asset_type)["prediction"]
+
 
 def get_backtest_chart(symbol: str, asset_type: str = "crypto") -> list[dict]:
-    """Return signal history + outcome for last 90 days (for backtest chart)."""
-    if asset_type == "crypto":
-        df = get_binance_history(symbol, days=500)
-    else:
-        # Stocks need more history: SMA-200 warm-up + 200-row training window
-        # 730 days → ~500 trading days after market-closed days stripped → ~300 usable rows
-        df = get_yf_history(symbol, days=730)
-
-    if df.empty or len(df) < MIN_TRAIN_ROWS:
-        return []
-
-    df = build_features(df)
-    df["_future_close"] = df["close"].shift(-PREDICTION_HORIZON)
-    df["target"] = np.where(df["_future_close"].isna(), np.nan,
-                            (df["_future_close"] > df["close"]).astype(float))
-    df = df.drop(columns=["_future_close"])
-    df = df.dropna(subset=["target"] + [c for c in FEATURE_COLS if c in df.columns]).reset_index(drop=True)
-    df["target"] = df["target"].astype(int)
-
-    feat_cols = [c for c in FEATURE_COLS if c in df.columns]
-    results   = []
-
-    # Walk-forward: re-train every 5 steps
-    window = 200
-    for i in range(window, len(df), 5):
-        X_tr = df[feat_cols].iloc[i - window:i].fillna(0)
-        y_tr = df["target"].iloc[i - window:i]
-        X_te = df[feat_cols].iloc[i:i+1].fillna(0)
-        y_te = df["target"].iloc[i]
-
-        if len(y_tr.unique()) < 2:
-            continue
-
-        sc = StandardScaler()
-        X_tr_s = sc.fit_transform(X_tr)
-        X_te_s = sc.transform(X_te)
-
-        rf, gb, xgb = _train_ensemble(X_tr_s, y_tr.values)
-        prob = float(_ensemble_proba(rf, gb, xgb, X_te_s)[0])
-        pred = 1 if prob >= 0.5 else 0
-
-        results.append({
-            "date":     df["date"].iloc[i].strftime("%Y-%m-%d"),
-            "price":    round(float(df["close"].iloc[i]), 6),
-            "signal":   "BUY" if pred == 1 else "SELL",
-            "correct":  bool(pred == int(y_te)),
-            "prob":     round(prob * 100, 1),
-        })
-
-    return results[-60:]   # last 60 signal points
+    """Out-of-sample signal history from the same analysis as predict_asset()."""
+    return analyze_asset(symbol, asset_type)["signals"]
 
 
 def quick_predict_asset(symbol: str, asset_type: str = "crypto") -> dict:
     """
-    Lightweight prediction for bulk scanning (used by the Top-5 Picks endpoint).
-
-    Identical to predict_asset() EXCEPT the expensive walk-forward backtest
-    (6 folds × 3 model trains) is replaced by a single train-on-all + predict.
-    This makes each prediction ~6-8x faster, cutting full-scan time from
-    ~12 minutes to ~2 minutes for 235 assets.
-
-    Returns the same keys as predict_asset() with backtest.accuracy = 0
-    (backtest details are not available in this fast path).
+    Fast path for bulk scanning (Top-5 Picks): one training pass, no
+    walk-forward. If a full analysis is already cached for the symbol it is
+    reused, so the picks carry real backtest accuracy when available.
     """
-    # 1. Fetch data
-    if asset_type == "crypto":
-        df = get_binance_history(symbol, days=730)
-    else:
-        df = get_yf_history(symbol, days=730)
+    full = cached_analysis(f"{asset_type}:{symbol}")
+    if full is not None:
+        return full["prediction"]
+    return _cached(_quick_cache, f"{asset_type}:{symbol}", lambda: _quick(symbol, asset_type))
 
+
+def _quick(symbol: str, asset_type: str) -> dict:
+    df = _fetch(symbol, asset_type)
     if df.empty or len(df) < MIN_TRAIN_ROWS:
         return _no_data_result(symbol)
-
-    # 2. Build features + target
-    df = build_features(df)
-    df["_future_close"] = df["close"].shift(-PREDICTION_HORIZON)
-    df["target"] = np.where(df["_future_close"].isna(), np.nan,
-                            (df["_future_close"] > df["close"]).astype(float))
-    df = df.drop(columns=["_future_close"])
-    df = df.dropna(subset=["target"] + [c for c in FEATURE_COLS if c in df.columns]).reset_index(drop=True)
-    df["target"] = df["target"].astype(int)
-
-    if len(df) < MIN_TRAIN_ROWS:
+    prepared = _prepare(df)
+    if prepared is None:
         return _no_data_result(symbol)
-
-    feat_cols = [c for c in FEATURE_COLS if c in df.columns]
-
-    # 3. Train ONE model on ALL data (skip walk-forward backtest)
-    scaler   = StandardScaler()
-    X_all_s  = scaler.fit_transform(df[feat_cols].fillna(0))
-    y_all    = df["target"]
-    rf, gb, xgb = _train_ensemble(X_all_s, y_all.values)
-
-    # 4. Predict current row
-    X_current   = df[feat_cols].iloc[-1:].fillna(0)
-    X_current_s = scaler.transform(X_current)
-    ml_prob     = float(_ensemble_proba(rf, gb, xgb, X_current_s)[0])
-
-    current_row   = df.iloc[-1].to_dict()
-    score         = _composite_score(current_row, ml_prob)
-    current_price = float(df["close"].iloc[-1])
-
-    # Signal
-    if score >= 62:
-        signal, signal_color = "BUY",  "green"
-    elif score <= 38:
-        signal, signal_color = "SELL", "red"
-    else:
-        signal, signal_color = "HOLD", "yellow"
-
-    # Trend direction
-    sma50  = float(df["sma_50"].iloc[-1])  if "sma_50"  in df.columns else current_price
-    sma200 = float(df["sma_200"].iloc[-1]) if "sma_200" in df.columns else current_price
-    trend  = "Bullish" if current_price > sma50 > sma200 else (
-             "Bearish" if current_price < sma50 < sma200 else "Sideways")
-
-    # Indicators
-    rsi_val   = round(float(current_row.get("rsi_14", 50)), 1)
-    macd_bull = bool(current_row.get("macd_bullish", 0))
-    bb_pos    = round(float(current_row.get("bb_pos", 0.5)), 2)
-    vol_surge = float(current_row.get("vol_ratio", 1)) > 1.5
-
-    sma20  = float(df["sma_20"].iloc[-1]) if "sma_20" in df.columns else current_price
-
-    # change_24h from last 2 closes (already in memory — no extra network call)
-    raw_df = df  # df still has the processed rows
-    if len(raw_df) >= 2:
-        prev_close = float(raw_df["close"].iloc[-2])
-        change_24h = round(((current_price - prev_close) / prev_close * 100) if prev_close else 0.0, 2)
-    else:
-        change_24h = 0.0
-
-    return {
-        "symbol":            symbol,
-        "asset_type":        asset_type,
-        "signal":            signal,
-        "signal_color":      signal_color,
-        "score":             round(score, 1),
-        "ml_probability":    round(ml_prob * 100, 1),
-        "confidence":        round(max(abs(ml_prob - 0.5) * 2 * 100, 5), 1),
-        "current_price":     current_price,
-        "change_24h":        change_24h,
-        "trend":             trend,
-        "indicators": {
-            "rsi":             rsi_val,
-            "rsi_signal":      "Oversold" if rsi_val < 30 else ("Overbought" if rsi_val > 70 else "Neutral"),
-            "macd_bullish":    macd_bull,
-            "bb_position":     bb_pos,
-            "bb_signal":       "Near support" if bb_pos < 0.2 else ("Near resistance" if bb_pos > 0.8 else "Mid range"),
-            "golden_cross":    bool(current_row.get("golden_cross", 0)),
-            "volume_surge":    vol_surge,
-            "trend_strength":  "Strong" if float(current_row.get("adx", 20)) > 25 else "Weak",
-            "adx":             round(float(current_row.get("adx", 0)), 1),
-            "sma_20":          round(sma20, 6),
-            "sma_50":          round(sma50, 6),
-            "sma_200":         round(sma200, 6),
-        },
-        "backtest": {"accuracy": 0},   # fast path: no backtest computed
-    }
+    train, latest, feat_cols = prepared
+    scaler = StandardScaler()
+    models = _train_ensemble(scaler.fit_transform(train[feat_cols].fillna(0)), train["target"].values)
+    X_latest = scaler.transform(latest[feat_cols].astype(float).to_frame().T.fillna(0))
+    ml_prob  = float(_ensemble_proba(*models, X_latest)[0])
+    pred = _build_prediction(symbol, asset_type, latest, ml_prob)
+    pred["backtest"] = {}          # not computed in the fast path
+    return pred
 
 
 def _no_data_result(symbol: str) -> dict:
@@ -568,6 +508,7 @@ def _no_data_result(symbol: str) -> dict:
         "signal":         "HOLD",
         "signal_color":   "yellow",
         "score":          50.0,
+        "score_breakdown": [],
         "ml_probability": 50.0,
         "confidence":     0.0,
         "current_price":  0,

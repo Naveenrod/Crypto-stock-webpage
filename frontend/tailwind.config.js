@@ -1,21 +1,29 @@
 /** @type {import('tailwindcss').Config} */
+const token = (name) => `rgb(var(${name}) / <alpha-value>)`;
+
 export default {
+  darkMode: ["selector", '[data-theme="dark"]'],
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        bg:       "#080d1a",
-        surface:  "#0f1628",
-        card:     "#141c30",
-        border:   "#1e2a42",
-        accent:   "#6366f1",
-        success:  "#22c55e",
-        danger:   "#ef4444",
-        warning:  "#f59e0b",
-        muted:    "#64748b",
+        bg:      token("--c-bg"),
+        surface: token("--c-surface"),
+        card:    token("--c-card"),
+        border:  token("--c-border"),
+        fg:      token("--c-text"),      // primary text
+        fg2:     token("--c-text2"),     // secondary text
+        muted:   token("--c-muted"),
+        accent:  token("--c-accent"),
+        success: token("--c-success"),
+        danger:  token("--c-danger"),
+        warning: token("--c-warning"),
       },
       fontFamily: {
         mono: ["JetBrains Mono", "Fira Code", "monospace"],
+      },
+      screens: {
+        xs: "420px",
       },
     },
   },

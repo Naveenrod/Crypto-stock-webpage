@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query, HTTPException, Path
 from data.asset_lists import REVOLUT_US_STOCKS, COMMSEC_AU_STOCKS
 from services.data_fetcher import get_yf_price, get_chart_data
 from services.predictor import predict_asset, get_backtest_chart
+from services.executor import run_ml
 from services.scraper import get_news, get_asset_news
 
 router = APIRouter()
@@ -39,18 +40,18 @@ def _validate_au_symbol(symbol: str) -> str:
 # ─── US Stocks ────────────────────────────────────────────────
 
 @router.get("/us/news/feed")
-async def us_news_feed():
+def us_news_feed():
     return {"news": get_news("us_stocks")}
 
 
 @router.get("/us/sectors/list")
-async def us_sectors():
+def us_sectors():
     sectors = sorted(s["sector"] for s in REVOLUT_US_STOCKS)
     return {"sectors": list(dict.fromkeys(sectors))}
 
 
 @router.get("/us/assets")
-async def list_us_stocks(sector: str = Query("all", max_length=50)):
+def list_us_stocks(sector: str = Query("all", max_length=50)):
     if sector not in _US_SECTORS:
         raise HTTPException(status_code=422, detail=f"Unknown sector '{sector}'")
     assets = REVOLUT_US_STOCKS if sector == "all" else [s for s in REVOLUT_US_STOCKS if s["sector"] == sector]
@@ -58,13 +59,13 @@ async def list_us_stocks(sector: str = Query("all", max_length=50)):
 
 
 @router.get("/us/{symbol}/price")
-async def get_us_price(symbol: str = Path(..., max_length=20)):
+def get_us_price(symbol: str = Path(..., max_length=20)):
     s = _validate_us_symbol(symbol)
     return get_yf_price(s, market="us")
 
 
 @router.get("/us/{symbol}/chart")
-async def get_us_chart(
+def get_us_chart(
     symbol: str = Path(..., max_length=20),
     period: Literal["1w", "1m", "3m", "6m", "1y", "2y"] = Query("1y"),
 ):
@@ -75,17 +76,17 @@ async def get_us_chart(
 @router.get("/us/{symbol}/predict")
 async def predict_us_stock(symbol: str = Path(..., max_length=20)):
     s = _validate_us_symbol(symbol)
-    return predict_asset(s, asset_type="stock")
+    return await run_ml(predict_asset, s, "stock")
 
 
 @router.get("/us/{symbol}/backtest")
 async def backtest_us_stock(symbol: str = Path(..., max_length=20)):
     s = _validate_us_symbol(symbol)
-    return {"symbol": s, "signals": get_backtest_chart(s, "stock")}
+    return {"symbol": s, "signals": await run_ml(get_backtest_chart, s, "stock")}
 
 
 @router.get("/us/{symbol}/news")
-async def us_stock_news(symbol: str = Path(..., max_length=20)):
+def us_stock_news(symbol: str = Path(..., max_length=20)):
     s = _validate_us_symbol(symbol)
     return {"symbol": s, "news": get_asset_news(s, "us")}
 
@@ -93,18 +94,18 @@ async def us_stock_news(symbol: str = Path(..., max_length=20)):
 # ─── AU Stocks ────────────────────────────────────────────────
 
 @router.get("/au/news/feed")
-async def au_news_feed():
+def au_news_feed():
     return {"news": get_news("au_stocks")}
 
 
 @router.get("/au/sectors/list")
-async def au_sectors():
+def au_sectors():
     sectors = sorted(s["sector"] for s in COMMSEC_AU_STOCKS)
     return {"sectors": list(dict.fromkeys(sectors))}
 
 
 @router.get("/au/assets")
-async def list_au_stocks(sector: str = Query("all", max_length=50)):
+def list_au_stocks(sector: str = Query("all", max_length=50)):
     if sector not in _AU_SECTORS:
         raise HTTPException(status_code=422, detail=f"Unknown sector '{sector}'")
     assets = COMMSEC_AU_STOCKS if sector == "all" else [s for s in COMMSEC_AU_STOCKS if s["sector"] == sector]
@@ -112,13 +113,13 @@ async def list_au_stocks(sector: str = Query("all", max_length=50)):
 
 
 @router.get("/au/{symbol}/price")
-async def get_au_price(symbol: str = Path(..., max_length=20)):
+def get_au_price(symbol: str = Path(..., max_length=20)):
     s = _validate_au_symbol(symbol)
     return get_yf_price(s, market="au")
 
 
 @router.get("/au/{symbol}/chart")
-async def get_au_chart(
+def get_au_chart(
     symbol: str = Path(..., max_length=20),
     period: Literal["1w", "1m", "3m", "6m", "1y", "2y"] = Query("1y"),
 ):
@@ -129,16 +130,16 @@ async def get_au_chart(
 @router.get("/au/{symbol}/predict")
 async def predict_au_stock(symbol: str = Path(..., max_length=20)):
     s = _validate_au_symbol(symbol)
-    return predict_asset(s, asset_type="stock")
+    return await run_ml(predict_asset, s, "stock")
 
 
 @router.get("/au/{symbol}/backtest")
 async def backtest_au_stock(symbol: str = Path(..., max_length=20)):
     s = _validate_au_symbol(symbol)
-    return {"symbol": s, "signals": get_backtest_chart(s, "stock")}
+    return {"symbol": s, "signals": await run_ml(get_backtest_chart, s, "stock")}
 
 
 @router.get("/au/{symbol}/news")
-async def au_stock_news(symbol: str = Path(..., max_length=20)):
+def au_stock_news(symbol: str = Path(..., max_length=20)):
     s = _validate_au_symbol(symbol)
     return {"symbol": s, "news": get_asset_news(s, "au")}

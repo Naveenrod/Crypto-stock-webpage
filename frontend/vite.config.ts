@@ -12,4 +12,16 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // Split the heavy chart library and React runtime into their own
+    // long-lived cacheable chunks instead of one 670 kB bundle.
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react:    ["react", "react-dom", "@tanstack/react-query"],
+          recharts: ["recharts"],
+        },
+      },
+    },
+  },
 });

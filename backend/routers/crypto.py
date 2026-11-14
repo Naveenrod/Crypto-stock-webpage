@@ -4,9 +4,12 @@ from fastapi import APIRouter, Query, HTTPException, Path
 from data.asset_lists import BINANCE_COINS, REVOLUT_CRYPTO
 from services.data_fetcher import get_all_binance_prices, get_binance_price, get_chart_data
 from services.predictor import predict_asset, get_backtest_chart
+from services.executor import run_ml
 from services.scraper import get_news, get_asset_news
 
 router = APIRouter()
+# NOTE: handlers that do network I/O are plain `def` (threadpool); ML handlers
+# await the dedicated ML executor. Nothing blocking runs on the event loop.
 
 # ── Whitelists ────────────────────────────────────────────────
 _BINANCE_SYMBOLS = frozenset(c["symbol"] for c in BINANCE_COINS)
@@ -25,12 +28,12 @@ def _validate_crypto_symbol(symbol: str) -> str:
 
 
 @router.get("/news/feed")
-async def crypto_news_feed():
+def crypto_news_feed():
     return {"news": get_news("crypto")}
 
 
 @router.get("/assets")
-async def list_crypto_assets(
+def list_crypto_assets(
     platform: Literal["all", "binance", "revolut"] = Query("all"),
 ):
     """List all crypto assets with live prices."""
@@ -62,13 +65,13 @@ async def list_crypto_assets(
 
 
 @router.get("/{symbol}/price")
-async def get_crypto_price(symbol: str = Path(..., max_length=20)):
+def get_crypto_price(symbol: str = Path(..., max_length=20)):
     s = _validate_crypto_symbol(symbol)
     return get_binance_price(s)
 
 
 @router.get("/{symbol}/chart")
-async def get_crypto_chart(
+def get_crypto_chart(
     symbol: str = Path(..., max_length=20),
     period: Literal["1w", "1m", "3m", "6m", "1y", "2y"] = Query("1y"),
 ):
@@ -79,16 +82,16 @@ async def get_crypto_chart(
 @router.get("/{symbol}/predict")
 async def predict_crypto(symbol: str = Path(..., max_length=20)):
     s = _validate_crypto_symbol(symbol)
-    return predict_asset(s, asset_type="crypto")
+    return await run_ml(predict_asset, s, "crypto")
 
 
 @router.get("/{symbol}/backtest")
 async def backtest_crypto(symbol: str = Path(..., max_length=20)):
     s = _validate_crypto_symbol(symbol)
-    return {"symbol": s, "signals": get_backtest_chart(s, "crypto")}
+    return {"symbol": s, "signals": await run_ml(get_backtest_chart, s, "crypto")}
 
 
 @router.get("/{symbol}/news")
-async def crypto_asset_news(symbol: str = Path(..., max_length=20)):
+def crypto_asset_news(symbol: str = Path(..., max_length=20)):
     s = _validate_crypto_symbol(symbol)
     return {"symbol": s, "news": get_asset_news(s, "crypto")}

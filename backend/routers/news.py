@@ -9,7 +9,7 @@ _VALID_CATEGORIES = Literal["all", "crypto", "us_stocks", "au_stocks"]
 
 
 @router.get("")
-async def news_feed(
+def news_feed(
     category: _VALID_CATEGORIES = Query("all"),
 ):
     """Aggregated news feed from trusted financial-news sources."""

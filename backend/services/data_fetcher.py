@@ -5,21 +5,24 @@ Fetches OHLCV and quote data from Binance (crypto) and yfinance (stocks).
 All functions return pandas DataFrames or dicts for the predictor / routers.
 """
 
+import os
 import threading
 import requests
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from cachetools import TTLCache
 import logging
 
 logger = logging.getLogger(__name__)
 
-# In-memory cache: price quotes cached 60 s, history 300 s
+# In-memory cache: price quotes cached 60 s, daily OHLCV history 30 min.
+# History is daily candles — only the current day's candle changes intraday —
+# so refetching it every 5 minutes (the old TTL) was wasted network + latency.
 # NOTE: cachetools.TTLCache is NOT thread-safe; guard every read/write with _cache_lock.
 _price_cache = TTLCache(maxsize=500, ttl=60)
-_hist_cache  = TTLCache(maxsize=200, ttl=300)
+_hist_cache  = TTLCache(maxsize=400, ttl=int(os.getenv("HISTORY_TTL_SECONDS", "1800")))
 _cache_lock  = threading.Lock()   # protects both caches
 
 BINANCE_BASE = "https://api.binance.com/api/v3"
@@ -65,8 +68,9 @@ def get_binance_history(symbol: str, days: int = 730) -> pd.DataFrame:
         if cache_key in _hist_cache:
             return _hist_cache[cache_key]
     try:
-        end_ms   = int(datetime.utcnow().timestamp() * 1000)
-        start_ms = int((datetime.utcnow() - timedelta(days=days)).timestamp() * 1000)
+        now      = datetime.now(timezone.utc)
+        end_ms   = int(now.timestamp() * 1000)
+        start_ms = int((now - timedelta(days=days)).timestamp() * 1000)
         r = requests.get(
             f"{BINANCE_BASE}/klines",
             params={"symbol": f"{symbol}USDT", "interval": "1d",
@@ -191,17 +195,24 @@ def get_yf_history(symbol: str, days: int = 730) -> pd.DataFrame:
 
 
 def get_chart_data(symbol: str, asset_type: str = "crypto", period: str = "1y") -> list[dict]:
-    """Return OHLCV suitable for charting (list of dicts)."""
+    """
+    Return OHLCV suitable for charting (list of dicts).
+    One 2-year fetch per symbol is cached and sliced per period, instead of a
+    separate network call (and cache entry) for every period button.
+    """
     days_map = {"1w": 7, "1m": 30, "3m": 90, "6m": 180, "1y": 365, "2y": 730}
     days = days_map.get(period, 365)
 
     if asset_type == "crypto":
-        df = get_binance_history(symbol, days)
+        df = get_binance_history(symbol, 730)
     else:
-        df = get_yf_history(symbol, days)
+        df = get_yf_history(symbol, 730)
 
     if df.empty:
         return []
+
+    cutoff = df["date"].max() - pd.Timedelta(days=days)
+    df = df[df["date"] >= cutoff]
 
     return [
         {

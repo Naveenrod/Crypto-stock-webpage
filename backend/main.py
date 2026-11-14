@@ -1,4 +1,6 @@
 import logging
+import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -13,7 +15,18 @@ logger = logging.getLogger(__name__)
 # ── Rate limiter: 120 req/min per IP (public market-data API) ──
 limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Warm the Top-Picks cache in the background as soon as the server starts,
+    # so the first visitor sees results instead of waiting for a cold scan.
+    # Set PICKS_WARMUP=0 to disable (e.g. in tests).
+    if os.getenv("PICKS_WARMUP", "1") != "0":
+        picks.start_scan()
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="FinSight API",
     description="Real-time crypto & stock market analysis with ML predictions",
     version="1.0.0",
@@ -69,7 +82,7 @@ app.include_router(picks.router,  prefix="/api/picks",  tags=["Picks"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "message": "FinSight API running"}
+    return {"status": "ok", "message": "FinSight API running", "scan": picks.get_scan_status()}
 
 
 if __name__ == "__main__":

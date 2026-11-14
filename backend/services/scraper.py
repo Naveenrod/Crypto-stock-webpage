@@ -7,6 +7,7 @@ Aggregates financial news from trusted RSS feeds:
   • AU:      ABC News Business, The Australian Financial Review (RSS)
 """
 
+import threading
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -18,6 +19,7 @@ from cachetools import TTLCache
 logger = logging.getLogger(__name__)
 
 _news_cache = TTLCache(maxsize=50, ttl=300)   # cache 5 min
+_news_lock  = threading.Lock()                  # TTLCache is not thread-safe
 
 RSS_FEEDS = {
     "crypto": [
@@ -102,8 +104,9 @@ def get_news(category: str = "crypto", max_per_source: int = 6) -> list[dict]:
     category: 'crypto' | 'us_stocks' | 'au_stocks' | 'all'
     """
     cache_key = f"news_{category}"
-    if cache_key in _news_cache:
-        return _news_cache[cache_key]
+    with _news_lock:
+        if cache_key in _news_cache:
+            return _news_cache[cache_key]
 
     feeds_to_fetch = []
     if category == "all":
@@ -139,7 +142,8 @@ def get_news(category: str = "crypto", max_per_source: int = 6) -> list[dict]:
             unique.append(item)
 
     result = unique[:50]
-    _news_cache[cache_key] = result
+    with _news_lock:
+        _news_cache[cache_key] = result
     return result
 
 

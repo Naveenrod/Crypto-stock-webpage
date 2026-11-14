@@ -1,246 +1,236 @@
 """
 Top-5 Picks Router
 ──────────────────
-Scans all 235 assets (70 crypto + 89 US stocks + 76 AU stocks) in parallel
-using the ML ensemble and returns the top-5 ranked by composite score for
-each category.
+Scans every supported asset (70 crypto + 87 US + 75 AU) with the ML ensemble's
+fast path and keeps the top-5 per category ranked by composite score.
 
-First response: ~30-60 s (cold scan, 16-worker ThreadPoolExecutor, interleaved).
-Subsequent responses within 5 min: <1 s (TTLCache hit).
+The scan runs in the BACKGROUND and never blocks a request:
+  • it starts at app startup (warm-up) and again whenever results are older
+    than PICKS_TTL (default 1 h — the inputs are daily candles)
+  • /api/picks/top5 returns immediately with whatever is ranked so far plus a
+    progress counter, so the UI can show picks streaming in on a cold start
+  • once a scan has completed, its results keep being served (flagged `stale`)
+    while the next refresh runs
+  • ?refresh=true forces a rescan, rate-limited to one per PICKS_MIN_REFRESH
 """
 
-import asyncio
 import logging
+import os
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+import time
+from concurrent.futures import as_completed, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from itertools import zip_longest
 from typing import Optional
 
-# Hard cap on the full scan so hung yfinance calls don't block indefinitely.
-# Any assets not completed within 90 s are skipped; remaining results are ranked.
-_SCAN_TIMEOUT_SECONDS = 180   # 3-min safety net for slow yfinance calls
-
-from cachetools import TTLCache
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from data.asset_lists import BINANCE_COINS, REVOLUT_US_STOCKS, COMMSEC_AU_STOCKS
 from services.data_fetcher import get_all_binance_prices
+from services.executor import scan_executor
 from services.predictor import quick_predict_asset
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# ── Asset name lookup maps (built once at import, O(1) lookups) ───────────────
-_CRYPTO_NAME_MAP: dict[str, str] = {c["symbol"]: c["name"] for c in BINANCE_COINS}
-_US_NAME_MAP:     dict[str, str] = {s["symbol"]: s["name"] for s in REVOLUT_US_STOCKS}
-_AU_NAME_MAP:     dict[str, str] = {s["symbol"]: s["name"] for s in COMMSEC_AU_STOCKS}
+PICKS_TTL        = int(os.getenv("PICKS_TTL_SECONDS", "3600"))
+MIN_REFRESH_GAP  = int(os.getenv("PICKS_MIN_REFRESH_SECONDS", "600"))
+SCAN_DEADLINE    = int(os.getenv("PICKS_SCAN_DEADLINE_SECONDS", "1500"))
 
-# ── Symbol lists (BINANCE_COINS only for crypto — avoids Revolut duplicates) ──
-_CRYPTO_SYMBOLS: list[str] = [c["symbol"] for c in BINANCE_COINS]      # 70
-_US_SYMBOLS:     list[str] = [s["symbol"] for s in REVOLUT_US_STOCKS]  # 89
-_AU_SYMBOLS:     list[str] = [s["symbol"] for s in COMMSEC_AU_STOCKS]  # 76
-_US_SYMBOL_SET:  frozenset = frozenset(_US_SYMBOLS)
+# ── Asset name lookup maps ────────────────────────────────────────────────────
+_NAME_MAP: dict[str, dict[str, str]] = {
+    "crypto": {c["symbol"]: c["name"] for c in BINANCE_COINS},
+    "us":     {s["symbol"]: s["name"] for s in REVOLUT_US_STOCKS},
+    "au":     {s["symbol"]: s["name"] for s in COMMSEC_AU_STOCKS},
+}
+_CRYPTO_SYMBOLS = [c["symbol"] for c in BINANCE_COINS]
 
-# ── Result cache: stores the entire picks result for 5 min ────────────────────
-_picks_cache:    TTLCache    = TTLCache(maxsize=1, ttl=300)
-_CACHE_KEY                   = "top5_picks"
-_build_lock:     threading.Lock = threading.Lock()  # prevents concurrent cold-start stampede
+# Interleave categories so each gets results early instead of crypto first.
+_TASKS: list[tuple[str, str, str]] = [
+    t for group in zip_longest(
+        [(s, "crypto", "crypto") for s in _CRYPTO_SYMBOLS],
+        [(s["symbol"], "stock", "us") for s in REVOLUT_US_STOCKS],
+        [(s["symbol"], "stock", "au") for s in COMMSEC_AU_STOCKS],
+    ) for t in group if t is not None
+]
+TOTAL_ASSETS = len(_TASKS)
+
+_EMPTY = lambda: {"crypto": [], "us": [], "au": []}   # noqa: E731
+
+_lock = threading.Lock()
+_state: dict = {
+    "status":      "idle",        # idle | scanning | ready | error
+    "started_at":  None,
+    "computed_at": None,          # ISO time the last COMPLETED scan started
+    "computed_ts": None,          # same, epoch seconds
+    "done":        0,
+    "ok":          0,
+    "results":     _EMPTY(),      # last completed scan
+    "partial":     _EMPTY(),      # scan in progress
+    "crypto_chg":  {},
+    "last_error":  None,
+}
 
 
 # ─────────────────────────── helpers ─────────────────────────────────────────
 
 def _safe_predict(symbol: str, asset_type: str, category: str) -> Optional[dict]:
-    """
-    Call quick_predict_asset() (no walk-forward backtest → ~6-8x faster)
-    and tag the result with a `_category` field.
-    Returns None on any error so callers can simply skip it.
-    """
     try:
         result = quick_predict_asset(symbol, asset_type)
         if result.get("error"):
             return None
-        result["_category"] = category   # "crypto" | "us" | "au"
+        result = dict(result)
+        result["_category"] = category
         return result
     except Exception as exc:
-        logger.warning("[picks] quick_predict_asset failed for %s (%s): %s", symbol, asset_type, exc)
+        logger.warning("[picks] prediction failed for %s (%s): %s", symbol, asset_type, exc)
         return None
 
 
 def _rank_top5(predictions: list[dict]) -> list[dict]:
-    """
-    Sort: BUY first (by score DESC), then HOLD/SELL (by score DESC). Take top 5.
-    """
-    buys  = sorted([p for p in predictions if p["signal"] == "BUY"],  key=lambda x: x["score"], reverse=True)
-    other = sorted([p for p in predictions if p["signal"] != "BUY"],  key=lambda x: x["score"], reverse=True)
+    """BUY first (score DESC), then HOLD/SELL (score DESC). Top 5."""
+    buys  = sorted([p for p in predictions if p["signal"] == "BUY"], key=lambda x: x["score"], reverse=True)
+    other = sorted([p for p in predictions if p["signal"] != "BUY"], key=lambda x: x["score"], reverse=True)
     return (buys + other)[:5]
 
 
-def _assemble_pick(pred: dict, name: str, change_24h: float) -> dict:
-    """Build the lean pick dict for the frontend."""
+def _assemble_pick(pred: dict, category: str, crypto_chg: dict) -> dict:
+    sym = pred["symbol"]
+    change = crypto_chg.get(sym) if category == "crypto" else None
+    if change is None:
+        change = pred.get("change_24h", 0.0)
+    backtest_acc = pred.get("backtest", {}).get("accuracy")
     return {
-        "symbol":            pred["symbol"],
-        "name":              name,
-        "asset_type":        pred["asset_type"],    # "crypto" or "stock"
+        "symbol":            sym,
+        "name":              _NAME_MAP[category].get(sym, sym),
+        "asset_type":        pred["asset_type"],
+        "category":          category,
         "signal":            pred["signal"],
         "score":             round(pred["score"], 1),
         "ml_probability":    round(pred["ml_probability"], 1),
         "confidence":        round(pred["confidence"], 1),
         "current_price":     pred["current_price"],
-        "change_24h":        round(change_24h, 2),
+        "change_24h":        round(float(change), 2),
         "trend":             pred.get("trend", "Sideways"),
-        "backtest_accuracy": round(pred.get("backtest", {}).get("accuracy", 0), 1),
+        "as_of":             pred.get("as_of"),
+        "backtest_accuracy": round(backtest_acc, 1) if backtest_acc is not None else None,
         "indicators":        pred.get("indicators", {}),
     }
 
 
-def _build_all_picks() -> dict:
-    """
-    Run all 235 predictions in parallel, rank by category, enrich with
-    change_24h, and return the completed result dict.
-
-    Designed to run in a thread (called via run_in_executor) so it doesn't
-    block the FastAPI event loop.
-    """
-    started_at = datetime.now(timezone.utc)
-
-    # Build the full task list: (symbol, asset_type, category)
-    # Interleave crypto/us/au so all three categories get worker slots immediately.
-    # Without interleaving, all 16 workers fill with crypto first; AU stocks
-    # wait in the queue until crypto + US finish, then hit the scan timeout.
-    crypto_tasks = [(s, "crypto", "crypto") for s in _CRYPTO_SYMBOLS]
-    us_tasks     = [(s, "stock",  "us")     for s in _US_SYMBOLS]
-    au_tasks     = [(s, "stock",  "au")     for s in _AU_SYMBOLS]
-    tasks: list[tuple[str, str, str]] = [
-        t for group in zip_longest(crypto_tasks, us_tasks, au_tasks)
-        for t in group if t is not None
-    ]
-
-    # ── Step 1: Pre-fetch crypto batch prices (1 network call → change_24h map) ──
+def _run_scan() -> None:
+    """Coordinator: fan out every asset to the scan pool, record progress."""
+    started = datetime.now(timezone.utc)
+    with _lock:
+        _state.update(status="scanning", started_at=started.isoformat(), done=0, ok=0,
+                      partial=_EMPTY(), last_error=None)
+    t0 = time.perf_counter()
     try:
-        crypto_price_list = get_all_binance_prices(_CRYPTO_SYMBOLS)
-        crypto_chg_map: dict[str, float] = {
-            p["symbol"]: p.get("change_24h", 0.0) for p in crypto_price_list
-        }
-    except Exception as exc:
-        logger.warning("[picks] Batch crypto price prefetch failed: %s", exc)
-        crypto_chg_map = {}
-
-    # ── Step 2: Run all 235 predict_asset() calls in parallel ─────────────────
-    crypto_results: list[dict] = []
-    us_results:     list[dict] = []
-    au_results:     list[dict] = []
-    total_ok = 0
-
-    # Use explicit lifecycle (not `with`) so shutdown(wait=False) can be called
-    # after a timeout — this avoids blocking on yfinance calls that hang indefinitely.
-    # 16 workers: good balance for 1GB RAM (Fly.io shared-cpu-1x).
-    # yfinance downloads release the GIL (I/O-bound) so threads still help.
-    executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="picks")
-    try:
-        future_to_meta = {
-            executor.submit(_safe_predict, sym, atype, cat): (sym, cat)
-            for sym, atype, cat in tasks
-        }
         try:
-            for future in as_completed(future_to_meta, timeout=_SCAN_TIMEOUT_SECONDS):
-                result = future.result()   # _safe_predict never raises
-                if result is None:
-                    continue
-                total_ok += 1
-                cat = result.pop("_category")
-                if cat == "crypto":
-                    crypto_results.append(result)
-                elif cat == "us":
-                    us_results.append(result)
-                else:
-                    au_results.append(result)
+            crypto_chg = {p["symbol"]: p.get("change_24h", 0.0) for p in get_all_binance_prices(_CRYPTO_SYMBOLS)}
+        except Exception as exc:
+            logger.warning("[picks] batch crypto price prefetch failed: %s", exc)
+            crypto_chg = {}
+
+        futures = {scan_executor.submit(_safe_predict, s, t, c): s for s, t, c in _TASKS}
+        try:
+            for fut in as_completed(futures, timeout=SCAN_DEADLINE):
+                res = fut.result()
+                with _lock:
+                    _state["done"] += 1
+                    if res is not None:
+                        _state["ok"] += 1
+                        _state["partial"][res.pop("_category")].append(res)
         except FuturesTimeoutError:
-            # Cancel queued (not-yet-started) futures
-            for f in future_to_meta:
+            for f in futures:
                 f.cancel()
-            logger.warning(
-                "[picks] Scan hit %ds timeout; %d/%d assets completed — proceeding with partial results.",
-                _SCAN_TIMEOUT_SECONDS, total_ok, len(tasks),
-            )
-    finally:
-        # wait=False: don't block the response waiting for stuck yfinance threads.
-        # Those threads will finish on their own; their results are discarded.
-        executor.shutdown(wait=False)
+            logger.warning("[picks] scan deadline (%ss) reached; keeping partial results", SCAN_DEADLINE)
 
-    # ── Step 3: Rank each category ────────────────────────────────────────────
-    top_crypto = _rank_top5(crypto_results)
-    top_us     = _rank_top5(us_results)
-    top_au     = _rank_top5(au_results)
-
-    # ── Step 4: Enrich top picks with change_24h ──────────────────────────────
-    # Crypto: use pre-fetched batch map
-    crypto_picks = [
-        _assemble_pick(p, _CRYPTO_NAME_MAP.get(p["symbol"], p["symbol"]),
-                       crypto_chg_map.get(p["symbol"], 0.0))
-        for p in top_crypto
-    ]
-
-    # US/AU stocks: reuse change_24h already computed from last 2 candles in
-    # quick_predict_asset (eliminates 10 sequential get_yf_price calls that were
-    # adding ~30-50 s of extra latency after the scan timeout fired).
-    us_picks = [
-        _assemble_pick(p, _US_NAME_MAP.get(p["symbol"], p["symbol"]),
-                       p.get("change_24h", 0.0))
-        for p in top_us
-    ]
-
-    au_picks = [
-        _assemble_pick(p, _AU_NAME_MAP.get(p["symbol"], p["symbol"]),
-                       p.get("change_24h", 0.0))
-        for p in top_au
-    ]
-
-    return {
-        "crypto":        crypto_picks,
-        "us_stocks":     us_picks,
-        "au_stocks":     au_picks,
-        "computed_at":   started_at.isoformat(),
-        "total_scanned": total_ok,
-        "ttl_seconds":   300,
-    }
+        with _lock:
+            _state["results"]     = _state["partial"]
+            _state["partial"]     = _EMPTY()
+            _state["crypto_chg"]  = crypto_chg
+            _state["computed_at"] = started.isoformat()
+            _state["computed_ts"] = started.timestamp()
+            _state["status"]      = "ready"
+            ok, done = _state["ok"], _state["done"]
+        logger.info("[picks] scan complete: %d/%d assets ok in %.0fs", ok, done, time.perf_counter() - t0)
+    except Exception as exc:                       # keep serving old results
+        logger.exception("[picks] scan failed")
+        with _lock:
+            _state["status"]     = "ready" if _state["computed_at"] else "error"
+            _state["last_error"] = str(exc)
 
 
-def _locked_build() -> dict:
-    """
-    Double-checked locking: ensures only one thread runs the full scan even
-    when multiple requests arrive simultaneously on a cold cache.
-    """
-    # First check (outside lock — fast path for most callers)
-    if _CACHE_KEY in _picks_cache:
-        return _picks_cache[_CACHE_KEY]
+def start_scan(force: bool = False) -> bool:
+    """Start a background scan unless one is running or results are fresh."""
+    with _lock:
+        if _state["status"] == "scanning":
+            return False
+        fresh = _state["computed_ts"] is not None and (time.time() - _state["computed_ts"]) < PICKS_TTL
+        if fresh and not force:
+            return False
+        _state["status"] = "scanning"             # claim before the thread starts
+    threading.Thread(target=_run_scan, name="picks-scan", daemon=True).start()
+    return True
 
-    with _build_lock:
-        # Second check (inside lock — guards against stampede)
-        if _CACHE_KEY in _picks_cache:
-            return _picks_cache[_CACHE_KEY]
 
-        result = _build_all_picks()
-        _picks_cache[_CACHE_KEY] = result
-        return result
+def get_scan_status() -> dict:
+    with _lock:
+        return {
+            "status":      _state["status"],
+            "progress":    {"done": _state["done"], "total": TOTAL_ASSETS, "ok": _state["ok"]},
+            "computed_at": _state["computed_at"],
+            "last_error":  _state["last_error"],
+        }
+
+
+def _snapshot(refresh_started: bool, refresh_available_in: Optional[int]) -> dict:
+    with _lock:
+        has_results = any(_state["results"].values())
+        source      = _state["results"] if has_results else _state["partial"]
+        is_partial  = not has_results
+        crypto_chg  = _state["crypto_chg"]
+        ranked = {cat: [_assemble_pick(p, cat, crypto_chg) for p in _rank_top5(lst)] for cat, lst in source.items()}
+        scanned = _state["ok"] if is_partial else sum(len(v) for v in source.values())
+        age = (time.time() - _state["computed_ts"]) if _state["computed_ts"] else None
+        return {
+            "status":        _state["status"],
+            "progress":      {"done": _state["done"], "total": TOTAL_ASSETS, "ok": _state["ok"]},
+            "partial":       is_partial,
+            "crypto":        ranked["crypto"],
+            "us_stocks":     ranked["us"],
+            "au_stocks":     ranked["au"],
+            "computed_at":   _state["computed_at"] or _state["started_at"],
+            "total_scanned": scanned,
+            "total_assets":  TOTAL_ASSETS,
+            "ttl_seconds":   PICKS_TTL,
+            "from_cache":    has_results,
+            "stale":         bool(age is not None and age > PICKS_TTL),
+            "refresh_started":      refresh_started,
+            "refresh_available_in": refresh_available_in,
+        }
 
 
 # ─────────────────────────── endpoint ────────────────────────────────────────
 
 @router.get("/top5")
-async def get_top_picks():
+async def get_top_picks(refresh: bool = Query(False, description="Force a rescan (rate-limited)")):
     """
-    Full scan of all 235 assets. Returns top 5 per category ranked by ML score.
-
-    - First response: ~30-60 s (cold ML scan across 235 assets).
-    - Cached response (within 5 min): < 1 s.
-    - BUY signals appear before HOLD/SELL within each category.
+    Top 5 per category ranked by ML score. Never blocks:
+    - `status` is `scanning` while a scan runs; `progress.done/total` is live
+    - `partial` is true when the lists come from a scan still in progress
+    - results are refreshed in the background once older than `ttl_seconds`
     """
-    # Serve from cache if available (avoids executor overhead)
-    if _CACHE_KEY in _picks_cache:
-        return {**_picks_cache[_CACHE_KEY], "from_cache": True}
-
-    # Move the blocking computation off the async event loop
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _locked_build)
-    return {**result, "from_cache": False}
+    refresh_started = False
+    refresh_available_in: Optional[int] = None
+    if refresh:
+        with _lock:
+            last = _state["computed_ts"]
+        if last is None or (time.time() - last) >= MIN_REFRESH_GAP:
+            refresh_started = start_scan(force=True)
+        else:
+            refresh_available_in = int(MIN_REFRESH_GAP - (time.time() - last))
+    else:
+        start_scan()
+    return _snapshot(refresh_started, refresh_available_in)
