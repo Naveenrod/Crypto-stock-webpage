@@ -122,7 +122,7 @@ export default function App() {
       </main>
 
       <footer className="border-t border-border mt-10 py-4 px-4 text-center text-xs text-muted">
-        FinSight — data from Binance · Yahoo Finance · trusted news RSS feeds · ML ensemble (Random Forest + Gradient Boosting + XGBoost)
+        FinSight — prices from Binance · Yahoo Finance · news via RSS · ML ensemble (Random Forest + Gradient Boosting + XGBoost) retrained every 6 h on GitHub Actions
       </footer>
     </div>
   );

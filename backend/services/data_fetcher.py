@@ -25,7 +25,25 @@ _price_cache = TTLCache(maxsize=500, ttl=60)
 _hist_cache  = TTLCache(maxsize=400, ttl=int(os.getenv("HISTORY_TTL_SECONDS", "1800")))
 _cache_lock  = threading.Lock()   # protects both caches
 
-BINANCE_BASE = "https://api.binance.com/api/v3"
+# data-api.binance.vision is Binance's public market-data mirror; api.binance.com
+# returns 451 from US networks (GitHub Actions runners included), so try the
+# mirror first and fall back to the main host. Override with BINANCE_BASE_URL.
+_BINANCE_BASES = [
+    os.getenv("BINANCE_BASE_URL", "https://data-api.binance.vision/api/v3"),
+    "https://api.binance.com/api/v3",
+]
+
+
+def _binance_get(path: str, params: dict | None = None, timeout: int = 10):
+    last_exc: Exception | None = None
+    for base in dict.fromkeys(_BINANCE_BASES):          # de-duplicated, order kept
+        try:
+            r = requests.get(f"{base}{path}", params=params, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except Exception as exc:                          # try the next host
+            last_exc = exc
+    raise last_exc if last_exc else RuntimeError("no Binance host configured")
 # NOTE: yfinance ≥1.0 uses curl_cffi internally and rejects a custom requests.Session.
 # Per-request timeouts are not directly exposed; slow/delisted tickers are
 # handled by the scan-level 180-second timeout in routers/picks.py.
@@ -40,9 +58,7 @@ def get_binance_price(symbol: str) -> dict:
         if cache_key in _price_cache:
             return _price_cache[cache_key]
     try:
-        ticker_r = requests.get(f"{BINANCE_BASE}/ticker/24hr", params={"symbol": f"{symbol}USDT"}, timeout=5)
-        ticker_r.raise_for_status()
-        d = ticker_r.json()
+        d = _binance_get("/ticker/24hr", {"symbol": f"{symbol}USDT"}, timeout=5)
         result = {
             "symbol":      symbol,
             "price":       float(d["lastPrice"]),
@@ -71,14 +87,8 @@ def get_binance_history(symbol: str, days: int = 730) -> pd.DataFrame:
         now      = datetime.now(timezone.utc)
         end_ms   = int(now.timestamp() * 1000)
         start_ms = int((now - timedelta(days=days)).timestamp() * 1000)
-        r = requests.get(
-            f"{BINANCE_BASE}/klines",
-            params={"symbol": f"{symbol}USDT", "interval": "1d",
-                    "startTime": start_ms, "endTime": end_ms, "limit": 1000},
-            timeout=10,
-        )
-        r.raise_for_status()
-        raw = r.json()
+        raw = _binance_get("/klines", {"symbol": f"{symbol}USDT", "interval": "1d",
+                                       "startTime": start_ms, "endTime": end_ms, "limit": 1000})
         df = pd.DataFrame(raw, columns=[
             "open_time","open","high","low","close","volume",
             "close_time","quote_vol","trades","taker_buy_base",
@@ -104,9 +114,7 @@ def get_all_binance_prices(symbols: list[str]) -> list[dict]:
         if cache_key in _price_cache:
             return _price_cache[cache_key]
     try:
-        r = requests.get(f"{BINANCE_BASE}/ticker/24hr", timeout=10)
-        r.raise_for_status()
-        data = {d["symbol"]: d for d in r.json()}
+        data = {d["symbol"]: d for d in _binance_get("/ticker/24hr")}
         results = []
         for sym in symbols:
             pair = f"{sym}USDT"

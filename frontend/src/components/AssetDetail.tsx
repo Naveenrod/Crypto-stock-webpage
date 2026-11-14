@@ -1,10 +1,15 @@
-import { ReactNode, useState } from "react";
+import { ReactNode, Suspense, lazy, useState } from "react";
 import { LineChart, Sparkles, History, Newspaper } from "lucide-react";
 import clsx from "clsx";
-import PriceChart from "./PriceChart";
 import PredictionCard from "./PredictionCard";
-import BacktestResults from "./BacktestResults";
 import NewsSection from "./NewsSection";
+
+// The chart library (~150 kB gzipped) is only needed once a Chart or Backtest
+// panel opens, so it is split out and loaded on demand.
+const PriceChart      = lazy(() => import("./PriceChart"));
+const BacktestResults = lazy(() => import("./BacktestResults"));
+
+const PanelFallback = () => <div className="card p-4"><div className="skeleton h-64 w-full" /></div>;
 import type { Market, NewsCategory } from "../api/client";
 
 type Panel = "chart" | "predict" | "backtest" | "news";
@@ -53,9 +58,9 @@ export default function AssetDetail({ market, symbol, header, newsCategory, curr
         ))}
       </div>
 
-      {panel === "chart"    && <PriceChart market={market} symbol={symbol} currency={currency} />}
+      {panel === "chart"    && <Suspense fallback={<PanelFallback />}><PriceChart market={market} symbol={symbol} currency={currency} /></Suspense>}
       {panel === "predict"  && <PredictionCard market={market} symbol={symbol} currency={currency} />}
-      {panel === "backtest" && <BacktestResults market={market} symbol={symbol} currency={currency} />}
+      {panel === "backtest" && <Suspense fallback={<PanelFallback />}><BacktestResults market={market} symbol={symbol} currency={currency} /></Suspense>}
       {panel === "news"     && (
         <NewsSection category={newsCategory} symbol={symbol} market={market} maxItems={12} showFilters={false} />
       )}

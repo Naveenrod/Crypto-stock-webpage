@@ -28,55 +28,68 @@ Real-time crypto & stock market analysis with ML predictions, backtesting, and n
 ### Install & Run
 
 ```bash
-cd financial-analyzer
-
-# One-time install
+# One-time install (Python venv + npm)
 ./install.sh
 
-# Launch (backend + frontend)
-./start.sh
+# Build a small local data set (15 assets per market) and start the UI
+./start.sh            # LIMIT=0 ./start.sh analyses every asset (~10 min)
 ```
 
-Then open **http://localhost:3000** in your browser.
-
-API docs available at **http://localhost:8000/docs**
+Then open **http://localhost:3000**. Live quotes and news are served by the
+Vercel functions; in development they are proxied to the deployed site
+(`VITE_API_PROXY_TARGET`), or run `npx vercel dev` inside `frontend/`.
 
 ---
 
-## Architecture
+## Architecture — no servers
+
+```
+GitHub Actions (every 6 h)            GitHub Pages (static JSON)        Vercel (free)
+┌──────────────────────────┐          ┌──────────────────────────┐      ┌──────────────────────────┐
+│ build_static.py          │ publish  │ /data/picks.json         │      │ React UI  (Vite)         │
+│  • 232 assets            │ ───────► │ /data/assets/*.json      │ ◄─── │   /data/* rewrite        │
+│  • prediction + backtest │          │ /data/analysis/<m>/<s>   │      │ api/quotes  (Binance)    │
+│  • 2-year chart          │          │ /data/manifest.json      │      │ api/quote   (Yahoo)      │
+└──────────────────────────┘          └──────────────────────────┘      │ api/news    (RSS)        │
+                                                                        └──────────────────────────┘
+```
+
+* **Models are trained on a schedule, never while a user waits.** The build runs
+  the full analysis for every asset and publishes plain JSON; the UI reads one
+  ~50 kB file per asset that contains its prediction, backtest signals and chart.
+* **Unchanged candles are not recomputed.** The build compares each asset's
+  latest daily candle with the previously published file and reuses it when
+  identical, so most runs retrain only what moved.
+* **Live prices and news** come from three small Vercel functions
+  (`frontend/api/`), cached at the edge for 60 s / 5 min so a thousand visitors
+  cost a handful of upstream calls.
+* Nothing to host, patch or pay for: GitHub Actions and Pages are free for public
+  repositories; Vercel's Hobby plan covers the UI and functions.
 
 ```
 financial-analyzer/
-├── backend/                    # Python FastAPI
-│   ├── main.py                 # App entry point
-│   ├── routers/
-│   │   ├── crypto.py           # /api/crypto/*
-│   │   ├── stocks.py           # /api/stocks/us/* and /api/stocks/au/*
-│   │   ├── picks.py            # /api/picks/top5 — background scan with live progress
-│   │   └── news.py             # /api/news/*
+├── backend/                    # Python — batch data build only
+│   ├── scripts/build_static.py # Produces the static data set
 │   ├── services/
-│   │   ├── data_fetcher.py     # Binance API + yfinance (cached)
-│   │   ├── predictor.py        # ML prediction engine (cached per symbol)
-│   │   ├── executor.py         # Thread pools that keep ML work off the event loop
-│   │   └── scraper.py          # RSS news aggregator
-│   └── data/
-│       └── asset_lists.py      # Binance / Revolut / CommSec asset lists
-└── frontend/                   # React + TypeScript + Vite
+│   │   ├── data_fetcher.py     # Binance (mirror + fallback) and yfinance, cached
+│   │   └── predictor.py        # ML ensemble, purged walk-forward backtest
+│   └── data/asset_lists.py     # Binance / Revolut / CommSec asset lists
+├── .github/workflows/
+│   └── data-refresh.yml        # Cron + manual + on backend change → Pages
+└── frontend/                   # React + TypeScript + Vite, deployed on Vercel
+    ├── api/                    # Vercel functions: quotes, quote, news
+    ├── vercel.json             # /data/* → GitHub Pages rewrite + cache headers
     └── src/
-        ├── App.tsx             # Main app with tabs + theme toggle
-        ├── api/client.ts       # API calls
+        ├── App.tsx             # Tabs, theme toggle
+        ├── api/client.ts       # Reads /data (static) and /api (functions)
         ├── theme/              # Light/dark theme provider (CSS variables)
         ├── utils/              # Formatting helpers, media queries
         └── components/
-            ├── TopPicksTab.tsx     # Live-progress Top 5 picks
-            ├── CryptoTab.tsx
-            ├── StockTab.tsx        # US + AU (shared)
+            ├── TopPicksTab.tsx     # Top 5 picks with live crypto prices
+            ├── CryptoTab.tsx / StockTab.tsx
             ├── AssetWorkspace.tsx  # Responsive list/detail layout
-            ├── AssetDetail.tsx     # Chart / AI Predict / Backtest / News panels
-            ├── PriceChart.tsx
-            ├── PredictionCard.tsx
-            ├── BacktestResults.tsx
-            └── NewsSection.tsx
+            ├── AssetDetail.tsx     # Chart / AI Predict / Backtest / News (charts lazy-loaded)
+            └── PriceChart.tsx, PredictionCard.tsx, BacktestResults.tsx, NewsSection.tsx
 ```
 
 ## Prediction Algorithm
@@ -113,45 +126,24 @@ the inputs are daily candles.
   so no future prices leak into the backtest
 - **Metrics**: Accuracy, Precision, Recall, F1, Profit Factor (7-day forward returns)
 
-### Top 5 Picks scan
-- Runs in a background thread: at startup (warm-up) and whenever results are
-  older than `PICKS_TTL_SECONDS` (default 1 h)
-- `/api/picks/top5` never blocks: it returns the current ranking plus
-  `progress.done/total`; the UI polls and shows picks as they are ranked
-- Previous results keep being served while a refresh runs; `?refresh=true`
-  forces a rescan (rate-limited by `PICKS_MIN_REFRESH_SECONDS`)
+### Data refresh
 
-### Performance / tuning (environment variables)
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `ML_WORKERS` | min(2, CPUs) | Threads for interactive predictions |
-| `SCAN_WORKERS` | min(2, CPUs) | Threads for the background Top-5 scan |
-| `ANALYSIS_TTL_SECONDS` | 3600 | Per-symbol prediction/backtest cache |
-| `HISTORY_TTL_SECONDS` | 1800 | Daily OHLCV cache |
-| `PICKS_TTL_SECONDS` | 3600 | How often the Top-5 scan refreshes |
-| `PICKS_MIN_REFRESH_SECONDS` | 600 | Manual rescan rate limit |
-| `PICKS_WARMUP` | 1 | Set `0` to skip the startup scan |
-| `OMP_NUM_THREADS` | 1 (Docker) | One OpenMP thread per model fit |
-
-ML work runs on dedicated thread pools, never on the API event loop, so health
-checks, price lists and charts stay fast while a prediction or scan is running.
+* `.github/workflows/data-refresh.yml` runs every 6 hours, on demand (Actions →
+  "Refresh market data" → Run workflow) and whenever `backend/` changes on `main`.
+* Each run writes `manifest.json` (counts, duration, failures, how many assets
+  were reused vs retrained) and the step summary shows the same numbers.
+* `REFRESH_HOURS` (default 6) controls the advertised refresh cadence,
+  `REUSE_BASE_URL` points the reuse check at the published data set.
 
 ## Deployment
 
 | Part | Where | How |
 |---|---|---|
-| Frontend | Vercel | Deploys automatically from `main`; `frontend/vercel.json` proxies `/api/*` to the Fly backend |
-| Backend | Fly.io (`finsight-backend`, Sydney) | `.github/workflows/fly-deploy.yml` runs `fly deploy` on pushes to `main` that touch `backend/` once the `FLY_API_TOKEN` secret is set. Manual fallback: `cd backend && fly deploy` |
+| Data | GitHub Pages | Published by the workflow (artifact deploy, no commits). URL: `https://naveenrod.github.io/Crypto-stock-webpage/data/` |
+| Frontend + functions | Vercel (project root `frontend/`) | Deploys automatically from `main`; `vercel.json` rewrites `/data/*` to Pages |
 
-The Fly VM is `shared-cpu-1x` (6.25 % CPU baseline, bursts from a credit balance).
-The hourly background scan uses about 90 s of CPU on a modern core, which fits
-the baseline; if the app gets busier, `fly scale vm shared-cpu-2x` is the cheapest
-way to keep predictions snappy during a scan.
-
-> **Note**: Financial markets are inherently unpredictable. Even the best ML models
-> achieve 55-65% direction accuracy. The backtested accuracy shown reflects
-> historical performance — not a guarantee of future results.
+One-time setup: GitHub → Settings → Pages → Source: **GitHub Actions** (the
+workflow tries to enable this itself on its first run).
 
 ## Data Sources
 

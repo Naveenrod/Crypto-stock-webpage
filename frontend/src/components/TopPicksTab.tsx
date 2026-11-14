@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   Trophy, RefreshCw, Clock, CheckCircle, TrendingUp, TrendingDown, Minus,
-  AlertTriangle, Cpu, ChevronRight, Info,
+  AlertTriangle, Cpu, ChevronRight, Info, CalendarClock,
 } from "lucide-react";
 import clsx from "clsx";
-import { fetchTopPicks, TopPick, TopPicksResult, Indicators, Market } from "../api/client";
+import { fetchTopPicks, fetchCryptoQuotes, TopPick, TopPicksResult, Indicators, Market } from "../api/client";
 import { fmtPrice, fmtPct, fmtDate, minutesAgo } from "../utils/format";
 
 interface Props { onOpenAsset: (market: Market, symbol: string) => void }
@@ -189,25 +189,29 @@ function CategorySection({ title, emoji, picks, market, scanning, onOpen }: {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function TopPicksTab({ onOpenAsset }: Props) {
-  const qc = useQueryClient();
   const { data, isLoading, error, refetch } = useQuery<TopPicksResult>({
     queryKey: PICKS_KEY,
     queryFn:  () => fetchTopPicks(),
-    staleTime: 0,
-    // Poll quickly while the server is scanning so picks stream in; otherwise check once a minute.
-    refetchInterval: q => (q.state.data?.status === "scanning" ? 2500 : 60_000),
+    staleTime: 5 * 60_000,
+    refetchInterval: 15 * 60_000,     // the data set is rebuilt every 6 h
     retry: 2,
   });
-  const rescan = useMutation({
-    mutationFn: () => fetchTopPicks(true),
-    onSuccess:  d => qc.setQueryData(PICKS_KEY, d),
+
+  // Overlay live Binance prices on the crypto picks (the file's prices are from build time).
+  const cryptoSymbols = (data?.crypto ?? []).map(p => p.symbol);
+  const { data: liveQuotes } = useQuery({
+    queryKey: ["quotes", "crypto", cryptoSymbols.join(",")],
+    queryFn:  () => fetchCryptoQuotes(cryptoSymbols),
+    enabled:  cryptoSymbols.length > 0,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
   });
 
   if (isLoading) {
     return (
       <div className="card p-8 flex flex-col items-center gap-3 text-center" aria-busy="true">
         <Cpu className="w-8 h-8 text-accent animate-pulse" />
-        <p className="text-fg font-semibold">Connecting to the ML scanner…</p>
+        <p className="text-fg font-semibold">Loading the latest picks…</p>
       </div>
     );
   }
@@ -216,8 +220,8 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
     return (
       <div className="card p-8 flex flex-col items-center gap-3 text-center">
         <AlertTriangle className="w-10 h-10 text-danger" />
-        <p className="text-fg font-semibold">Couldn't reach the picks service</p>
-        <p className="text-sm text-muted max-w-sm">The server may be restarting. Your other tabs still work; try again in a moment.</p>
+        <p className="text-fg font-semibold">Couldn't load the picks</p>
+        <p className="text-sm text-muted max-w-sm">The data set may still be publishing after an update. Your other tabs still work; try again in a moment.</p>
         <button type="button" onClick={() => refetch()} className="inline-flex items-center gap-2 px-4 min-h-[40px] rounded-lg bg-accent/10 border border-accent/30 text-accent text-sm font-medium">
           <RefreshCw className="w-4 h-4" /> Retry
         </button>
@@ -225,80 +229,55 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
     );
   }
 
-  // Tolerate the previous backend's response shape (no status/progress fields)
-  // so a frontend deploy that lands before the backend one still renders.
-  const scanning = data.status === "scanning";
-  const { done, total } = data.progress ?? { done: 0, total: 0, ok: 0 };
-  const partial = data.partial ?? false;
+  const live = Object.fromEntries((liveQuotes ?? []).map(q => [q.symbol, q]));
+  const picks = {
+    crypto: (data.crypto ?? []).map(p => live[p.symbol] ? { ...p, current_price: live[p.symbol].price, change_24h: live[p.symbol].change_24h } : p),
+    us:     data.us_stocks ?? [],
+    au:     data.au_stocks ?? [],
+  };
   const totalAssets = data.total_assets ?? data.total_scanned ?? 0;
-  const pct = total ? Math.round((done / total) * 100) : 0;
   const mins = minutesAgo(data.computed_at);
-  const picks = { crypto: data.crypto ?? [], us: data.us_stocks ?? [], au: data.au_stocks ?? [] };
   const asOf = [...picks.crypto, ...picks.us, ...picks.au].find(p => p.as_of)?.as_of;
-  const refreshDenied = rescan.data?.refresh_available_in ?? null;
+  const nextRefresh = data.next_refresh_at ? new Date(data.next_refresh_at) : null;
+  const stale = nextRefresh ? Date.now() > nextRefresh.getTime() + 60 * 60_000 : false;
 
   return (
     <div className="space-y-4">
       {/* Header / status */}
-      <div className="card p-4 space-y-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="w-10 h-10 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center flex-shrink-0">
-            <Trophy className="w-5 h-5 text-accent" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="font-semibold text-fg leading-tight">Top 5 ML picks</h2>
-            <p className="text-xs text-muted">
-              {scanning
-                ? partial
-                  ? <>Scanning {done} of {total} assets — results appear as they're ranked</>
-                  : <>Refreshing in the background ({done}/{total}) — showing the previous results meanwhile</>
-                : <>{data.total_scanned} of {totalAssets} assets ranked by composite score{asOf && <> · candles to {fmtDate(asOf)}</>}</>}
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 text-xs">
-            {!scanning && data.computed_at && (
-              <span className="inline-flex items-center gap-1.5 text-muted">
-                {(data.stale ?? false) ? <Clock className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5 text-success" />}
-                {mins === 0 ? "just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => rescan.mutate()}
-              disabled={scanning || rescan.isPending}
-              className={clsx("inline-flex items-center gap-1.5 px-3 min-h-[40px] rounded-lg text-xs font-medium transition-colors",
-                "bg-surface border border-border text-muted hover:border-accent/40 hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed")}
-            >
-              <RefreshCw className={clsx("w-3.5 h-3.5", scanning && "animate-spin")} />
-              {scanning ? "Scanning…" : "Rescan"}
-            </button>
-          </div>
+      <div className="card p-4 flex items-center gap-3 flex-wrap">
+        <div className="w-10 h-10 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center flex-shrink-0">
+          <Trophy className="w-5 h-5 text-accent" />
         </div>
-
-        {scanning && (
-          <div className="space-y-1" aria-live="polite">
-            <div className="w-full h-1.5 bg-surface border border-border rounded-full overflow-hidden">
-              <div className="h-full bg-accent rounded-full transition-all duration-700" style={{ width: `${pct}%` }} />
-            </div>
-            <p className="text-[11px] text-muted">{pct}% · training three models per asset on two years of daily candles</p>
-          </div>
-        )}
-        {refreshDenied != null && !scanning && (
-          <p className="text-[11px] text-muted">Results are fresh — a new scan can be started in {Math.ceil(refreshDenied / 60)} min.</p>
-        )}
+        <div className="min-w-0 flex-1">
+          <h2 className="font-semibold text-fg leading-tight">Top 5 ML picks</h2>
+          <p className="text-xs text-muted">
+            {data.total_scanned} of {totalAssets} assets ranked by composite score{asOf && <> · candles to {fmtDate(asOf)}</>}
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-muted">
+          <span className="inline-flex items-center gap-1.5" title={data.computed_at ?? undefined}>
+            {stale ? <Clock className="w-3.5 h-3.5 text-warning" /> : <CheckCircle className="w-3.5 h-3.5 text-success" />}
+            models retrained {mins < 60 ? `${mins} min` : `${Math.round(mins / 60)} h`} ago
+          </span>
+          {nextRefresh && !stale && (
+            <span className="hidden sm:inline-flex items-center gap-1.5">
+              <CalendarClock className="w-3.5 h-3.5" />
+              next refresh {nextRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Picks */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
-        <CategorySection title="Crypto"    emoji="₿"  picks={picks.crypto} market="crypto" scanning={scanning && partial} onOpen={onOpenAsset} />
-        <CategorySection title="US stocks" emoji="🇺🇸" picks={picks.us}     market="us"     scanning={scanning && partial} onOpen={onOpenAsset} />
-        <CategorySection title="AU stocks" emoji="🇦🇺" picks={picks.au}     market="au"     scanning={scanning && partial} onOpen={onOpenAsset} />
+        <CategorySection title="Crypto"    emoji="₿"  picks={picks.crypto} market="crypto" scanning={false} onOpen={onOpenAsset} />
+        <CategorySection title="US stocks" emoji="🇺🇸" picks={picks.us}     market="us"     scanning={false} onOpen={onOpenAsset} />
+        <CategorySection title="AU stocks" emoji="🇦🇺" picks={picks.au}     market="au"     scanning={false} onOpen={onOpenAsset} />
       </div>
 
       <p className="text-center text-[11px] text-muted pb-2">
-        Rankings combine an ML ensemble (Random Forest + Gradient Boosting + XGBoost) with 30+ technical indicators.
-        Tap a pick to open its chart, full prediction and backtest. Not financial advice.
+        Rankings combine an ML ensemble (Random Forest + Gradient Boosting + XGBoost) with 30+ technical indicators,
+        retrained on every asset every 6 hours. Tap a pick to open its chart, full prediction and backtest. Not financial advice.
       </p>
     </div>
   );

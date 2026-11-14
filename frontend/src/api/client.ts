@@ -1,6 +1,15 @@
+/**
+ * Data access for the UI.
+ *
+ * There is no application server. Two sources:
+ *   /data/*  – static JSON built every 6 h by GitHub Actions (backend/scripts/build_static.py)
+ *              and published to GitHub Pages; Vercel rewrites /data/* to it.
+ *   /api/*   – tiny Vercel functions (frontend/api) for live quotes and news, edge-cached.
+ */
 import axios from "axios";
 
-const api = axios.create({ baseURL: "/api", timeout: 30000 });
+const data = axios.create({ baseURL: "/data", timeout: 20_000 });
+const api  = axios.create({ baseURL: "/api",  timeout: 20_000 });
 
 // ── Types ───────────────────────────────────────────────────
 export type Market = "crypto" | "us" | "au";
@@ -32,6 +41,7 @@ export interface Quote {
   high_24h:   number;
   low_24h:    number;
   market:     string;
+  currency?:  string | null;
 }
 
 export interface OHLCVPoint {
@@ -108,44 +118,87 @@ export interface BacktestPoint {
   prob:    number;
 }
 
-// ── Crypto ──────────────────────────────────────────────────
-export const fetchCryptoAssets = (platform = "all") =>
-  api.get<{ assets: CryptoAsset[] }>(`/crypto/assets`, { params: { platform } }).then(r => r.data.assets);
+export interface AssetAnalysis {
+  market:      Market;
+  symbol:      string;
+  name:        string;
+  computed_at: string;
+  prediction:  Prediction;
+  signals:     BacktestPoint[];
+  chart:       OHLCVPoint[];     // ~2 years of daily candles
+}
 
-// ── Stocks (US + AU share one shape) ────────────────────────
-const stockBase = (market: "us" | "au") => `/stocks/${market}`;
+// ── Static files (de-duplicated, remembered for the session) ─
+const fileCache = new Map<string, { at: number; p: Promise<unknown> }>();
+const FILE_MAX_AGE = 30 * 60_000;     // re-read after 30 min (data refreshes every 6 h)
 
-export const fetchStocks = (market: "us" | "au", sector = "all") =>
-  api.get<{ assets: StockAsset[] }>(`${stockBase(market)}/assets`, { params: { sector } }).then(r => r.data.assets);
+function loadFile<T>(path: string): Promise<T> {
+  const hit = fileCache.get(path);
+  if (hit && Date.now() - hit.at < FILE_MAX_AGE) return hit.p as Promise<T>;
+  const p = data.get<T>(path).then(r => r.data).catch(err => { fileCache.delete(path); throw err; });
+  fileCache.set(path, { at: Date.now(), p });
+  return p;
+}
 
-export const fetchSectors = (market: "us" | "au") =>
-  api.get<{ sectors: string[] }>(`${stockBase(market)}/sectors/list`).then(r => r.data.sectors);
+/** One ~50 kB file per asset feeds the chart, the prediction and the backtest. */
+export const fetchAnalysis = (market: Market, symbol: string) =>
+  loadFile<AssetAnalysis>(`/analysis/${market}/${encodeURIComponent(symbol)}.json`);
 
-export const fetchStockQuote = (market: "us" | "au", symbol: string) =>
-  api.get<Quote>(`${stockBase(market)}/${encodeURIComponent(symbol)}/price`).then(r => r.data);
+const PERIOD_DAYS: Record<string, number> = { "1w": 7, "1m": 30, "3m": 90, "6m": 180, "1y": 365, "2y": 730 };
 
-// ── Per-asset analysis (works for every market) ─────────────
-const assetBase = (market: Market, symbol: string) =>
-  market === "crypto" ? `/crypto/${encodeURIComponent(symbol)}` : `${stockBase(market)}/${encodeURIComponent(symbol)}`;
+export const fetchChart = async (market: Market, symbol: string, period = "1y"): Promise<OHLCVPoint[]> => {
+  const { chart } = await fetchAnalysis(market, symbol);
+  const last = chart[chart.length - 1];
+  if (!last) return [];
+  const cutoff = new Date(last.date).getTime() - (PERIOD_DAYS[period] ?? 365) * 86_400_000;
+  return chart.filter(p => new Date(p.date).getTime() >= cutoff);
+};
 
-export const fetchChart = (market: Market, symbol: string, period = "1y") =>
-  api.get<{ data: OHLCVPoint[] }>(`${assetBase(market, symbol)}/chart`, { params: { period } }).then(r => r.data.data);
+export const fetchPrediction = (market: Market, symbol: string) => fetchAnalysis(market, symbol).then(a => a.prediction);
+export const fetchBacktest   = (market: Market, symbol: string) => fetchAnalysis(market, symbol).then(a => a.signals);
 
-// A full prediction trains the ensemble ~7 times; allow up to 2 min on a busy server.
-export const fetchPrediction = (market: Market, symbol: string) =>
-  api.get<Prediction>(`${assetBase(market, symbol)}/predict`, { timeout: 120_000 }).then(r => r.data);
+// ── Asset lists ─────────────────────────────────────────────
+interface CryptoListFile { assets: Omit<CryptoAsset, "price" | "change_24h" | "volume_24h" | "high_24h" | "low_24h">[] }
+interface StockListFile  { platform: string; sectors: string[]; assets: StockAsset[] }
 
-export const fetchBacktest = (market: Market, symbol: string) =>
-  api.get<{ signals: BacktestPoint[] }>(`${assetBase(market, symbol)}/backtest`, { timeout: 120_000 }).then(r => r.data.signals);
+export const fetchCryptoQuotes = (symbols: string[]) =>
+  api.get<{ quotes: Quote[] }>("/quotes", { params: { market: "crypto", symbols: symbols.join(",") } }).then(r => r.data.quotes);
 
-export const fetchAssetNews = (market: Market, symbol: string) =>
-  api.get<{ news: NewsItem[] }>(`${assetBase(market, symbol)}/news`).then(r => r.data.news);
+/** Static coin list merged with live Binance tickers (prices fall back to 0 if quotes are down). */
+export async function fetchCryptoAssets(platform = "all"): Promise<CryptoAsset[]> {
+  const list = await loadFile<CryptoListFile>("/assets/crypto.json");
+  const base = platform === "revolut" ? list.assets.filter(a => a.on_revolut) : list.assets;
+  let quotes: Record<string, Quote> = {};
+  try {
+    quotes = Object.fromEntries((await fetchCryptoQuotes(base.map(a => a.symbol))).map(q => [q.symbol, q]));
+  } catch { /* show the list without prices rather than nothing */ }
+  return base.map(a => {
+    const q = quotes[a.symbol];
+    return { ...a, price: q?.price ?? 0, change_24h: q?.change_24h ?? 0, volume_24h: q?.volume_24h ?? 0, high_24h: q?.high_24h ?? 0, low_24h: q?.low_24h ?? 0 };
+  });
+}
+
+export const fetchStocks = async (market: "us" | "au", sector = "all"): Promise<StockAsset[]> => {
+  const f = await loadFile<StockListFile>(`/assets/${market}.json`);
+  return sector === "all" ? f.assets : f.assets.filter(a => a.sector === sector);
+};
+
+export const fetchSectors = async (market: "us" | "au"): Promise<string[]> =>
+  (await loadFile<StockListFile>(`/assets/${market}.json`)).sectors;
+
+export const fetchStockQuote = (_market: "us" | "au", symbol: string) =>
+  api.get<Quote>("/quote", { params: { symbol } }).then(r => r.data);
 
 // ── News ────────────────────────────────────────────────────
 export type NewsCategory = "all" | "crypto" | "us_stocks" | "au_stocks";
 
 export const fetchNews = (category: NewsCategory = "all") =>
-  api.get<{ news: NewsItem[] }>(`/news`, { params: { category } }).then(r => r.data.news);
+  api.get<{ news: NewsItem[] }>("/news", { params: { category } }).then(r => r.data.news);
+
+const NEWS_CATEGORY: Record<Market, NewsCategory> = { crypto: "crypto", us: "us_stocks", au: "au_stocks" };
+
+export const fetchAssetNews = (market: Market, symbol: string) =>
+  api.get<{ news: NewsItem[] }>("/news", { params: { category: NEWS_CATEGORY[market], symbol } }).then(r => r.data.news);
 
 // ── Top 5 Picks ─────────────────────────────────────────────
 export interface TopPick {
@@ -161,29 +214,26 @@ export interface TopPick {
   change_24h:        number;
   trend:             string;           // "Bullish" | "Bearish" | "Sideways"
   as_of?:            string;
-  backtest_accuracy: number | null;    // null when only the fast scan ran (0 from the old backend)
+  backtest_accuracy: number | null;
   indicators:        Indicators;
 }
 
 export interface TopPicksResult {
-  // status/progress/partial/total_assets/stale are optional only so the UI keeps
-  // working if it is deployed ahead of the backend that provides them.
   status?:       "idle" | "scanning" | "ready" | "error";
   progress?:     { done: number; total: number; ok: number };
-  partial?:      boolean;              // lists come from a scan still in progress
+  partial?:      boolean;
   crypto:        TopPick[];
   us_stocks:     TopPick[];
   au_stocks:     TopPick[];
   computed_at:   string | null;
+  next_refresh_at?: string;
   total_scanned: number;
   total_assets?: number;
   ttl_seconds:   number;
   from_cache:    boolean;
   stale?:        boolean;
-  refresh_started?:      boolean;
-  refresh_available_in?: number | null;
 }
 
-/** Never blocks on the server: returns progress + whatever is ranked so far. */
-export const fetchTopPicks = (refresh = false): Promise<TopPicksResult> =>
-  api.get<TopPicksResult>("/picks/top5", { params: refresh ? { refresh: true } : {} }).then(r => r.data);
+/** Pre-computed by the scheduled data build; a small cache-buster keeps a long-open tab fresh. */
+export const fetchTopPicks = (): Promise<TopPicksResult> =>
+  data.get<TopPicksResult>("/picks.json", { params: { v: Math.floor(Date.now() / 300_000) } }).then(r => r.data);

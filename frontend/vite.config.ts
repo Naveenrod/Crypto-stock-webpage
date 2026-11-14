@@ -6,8 +6,15 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
+      // Static data: served from frontend/public/data when ./start.sh built it
+      // locally; otherwise fall back to the published GitHub Pages data set.
+      ...(process.env.VITE_USE_REMOTE_DATA
+        ? { "/data": { target: "https://naveenrod.github.io/Crypto-stock-webpage", changeOrigin: true } }
+        : {}),
+      // Live quotes + news are Vercel functions (frontend/api). In dev, proxy
+      // them to the deployed site, or run `npx vercel dev` instead of `vite`.
       "/api": {
-        target: "http://localhost:9000",
+        target: process.env.VITE_API_PROXY_TARGET || "https://crypto-stock-webpage.vercel.app",
         changeOrigin: true,
       },
     },

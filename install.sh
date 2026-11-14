@@ -1,23 +1,14 @@
 #!/usr/bin/env bash
-# One-time installation script
+# One-time local setup: Python deps for the data build + Node deps for the UI.
 set -e
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_DIR="$PROJECT_DIR/backend"
-FRONTEND_DIR="$PROJECT_DIR/frontend"
-
 echo "Installing FinSight dependencies…"
-
-# Backend
-python3 -m venv "$BACKEND_DIR/venv"
-source "$BACKEND_DIR/venv/bin/activate"
+python3 -m venv "$PROJECT_DIR/backend/venv"
+source "$PROJECT_DIR/backend/venv/bin/activate"
 pip install --upgrade pip
-pip install -r "$BACKEND_DIR/requirements.txt"
-echo "✓ Backend dependencies installed"
-
-# Frontend
-cd "$FRONTEND_DIR"
-npm install --legacy-peer-deps
-echo "✓ Frontend dependencies installed"
-
+pip install -r "$PROJECT_DIR/backend/requirements.txt"
+echo "✓ Python dependencies installed"
+cd "$PROJECT_DIR/frontend" && npm install
+echo "✓ Node dependencies installed"
 echo ""
-echo "Installation complete! Run ./start.sh to launch FinSight."
+echo "Done. Run ./start.sh to build a local data set and start the UI."

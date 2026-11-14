@@ -12,6 +12,11 @@ backend/**/*.pyo
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/.vercel/
+
+# Generated data (built by backend/scripts/build_static.py)
+frontend/public/data/
+site/
 
 # OS
 .DS_Store
