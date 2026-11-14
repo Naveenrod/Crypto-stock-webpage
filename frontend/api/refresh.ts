@@ -54,7 +54,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const d = await gh(`/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW}/dispatches`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ref: BRANCH }),
     });
-    if (d.status !== 204) return send(res, 502, { error: `GitHub refused the dispatch (${d.status})`, detail: (await d.text()).slice(0, 200) });
+    if (d.status !== 204) {
+      let detail = (await d.text()).slice(0, 300);
+      try { detail = JSON.parse(detail)?.message ?? detail; } catch { /* keep raw text */ }
+      const hint = d.status === 403 || d.status === 404
+        ? " The token needs repository permission Actions: Read and write for this repository."
+        : "";
+      return send(res, 502, { error: `GitHub refused the dispatch (${d.status})`, detail: `${detail}${hint}` });
+    }
     return send(res, 202, { ...st, started: true, running: true });
   } catch (e) {
     return send(res, 502, { error: "GitHub unavailable", detail: (e as Error).message });

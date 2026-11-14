@@ -232,9 +232,19 @@ function useOnDemandRefresh(currentComputedAt: string | null | undefined) {
       return st.running || recentlyKicked || landing ? 10_000 : 60_000;
     },
   });
+  const [notice, setNotice] = useState<string | null>(null);
   const start = useMutation({
     mutationFn: startRefresh,
-    onSuccess: st => { if (st.started) setKickedAt(Date.now()); qc.setQueryData(["refresh-status"], st); },
+    onSuccess: st => {
+      qc.setQueryData(["refresh-status"], st);
+      if (st.started) { setKickedAt(Date.now()); setNotice(null); }
+      else if (st.reason === "already_running") setNotice("A refresh is already running — hang on.");
+      else if (st.reason === "cooldown") setNotice(`The data set was refreshed recently — try again in ${Math.ceil((st.cooldown_seconds_left ?? 0) / 60)} min.`);
+    },
+    onError: (err: any) => {
+      const body = err?.response?.data;
+      setNotice(`Couldn't start a refresh: ${body?.error ?? err?.message ?? "unknown error"}${body?.detail ? ` — ${body.detail}` : ""}`);
+    },
   });
 
   // Detect "was running → finished successfully" and pull the fresh data set.
@@ -275,7 +285,7 @@ function useOnDemandRefresh(currentComputedAt: string | null | undefined) {
   }, [st?.configured, st?.running, st?.cooldown_seconds_left, currentComputedAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const statusError = statusQ.error ? ((statusQ.error as any)?.response?.data?.error ?? (statusQ.error as Error).message) : null;
-  return { status: st, statusError, running, landing, start, kickedAt };
+  return { status: st, statusError, running, landing, start, kickedAt, notice, clearNotice: () => setNotice(null) };
 }
 
 export default function TopPicksTab({ onOpenAsset }: Props) {
@@ -362,6 +372,13 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
           )}
         </div>
       </div>
+      {refresh.notice && !refresh.running && (
+        <div className="card px-4 py-2.5 flex items-start gap-3 text-xs border-warning/40" role="alert">
+          <AlertTriangle className="w-4 h-4 text-warning flex-shrink-0 mt-0.5" />
+          <span className="text-fg2 break-words">{refresh.notice}</span>
+          <button type="button" onClick={refresh.clearNotice} className="ml-auto text-muted hover:text-fg" aria-label="Dismiss">✕</button>
+        </div>
+      )}
       {refresh.running && (
         <div className="card px-4 py-2.5 flex items-center gap-3 text-xs" aria-live="polite">
           <RefreshCw className="w-4 h-4 text-accent animate-spin flex-shrink-0" />
