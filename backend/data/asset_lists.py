@@ -12,7 +12,6 @@ BINANCE_COINS = [
     {"symbol": "DOGE", "name": "Dogecoin",          "binance_pair": "DOGEUSDT"},
     {"symbol": "DOT",  "name": "Polkadot",          "binance_pair": "DOTUSDT"},
     {"symbol": "AVAX", "name": "Avalanche",         "binance_pair": "AVAXUSDT"},
-    {"symbol": "MATIC","name": "Polygon",           "binance_pair": "MATICUSDT"},
     {"symbol": "LINK", "name": "Chainlink",         "binance_pair": "LINKUSDT"},
     {"symbol": "LTC",  "name": "Litecoin",          "binance_pair": "LTCUSDT"},
     {"symbol": "UNI",  "name": "Uniswap",           "binance_pair": "UNIUSDT"},
@@ -25,16 +24,13 @@ BINANCE_COINS = [
     {"symbol": "ALGO", "name": "Algorand",          "binance_pair": "ALGOUSDT"},
     {"symbol": "VET",  "name": "VeChain",           "binance_pair": "VETUSDT"},
     {"symbol": "ICP",  "name": "Internet Computer", "binance_pair": "ICPUSDT"},
-    {"symbol": "FTM",  "name": "Fantom",            "binance_pair": "FTMUSDT"},
     {"symbol": "SAND", "name": "The Sandbox",       "binance_pair": "SANDUSDT"},
     {"symbol": "MANA", "name": "Decentraland",      "binance_pair": "MANAUSDT"},
     {"symbol": "AAVE", "name": "Aave",              "binance_pair": "AAVEUSDT"},
     {"symbol": "AXS",  "name": "Axie Infinity",     "binance_pair": "AXSUSDT"},
     {"symbol": "THETA","name": "Theta Network",     "binance_pair": "THETAUSDT"},
-    {"symbol": "EOS",  "name": "EOS",               "binance_pair": "EOSUSDT"},
     {"symbol": "CAKE", "name": "PancakeSwap",       "binance_pair": "CAKEUSDT"},
     {"symbol": "TRX",  "name": "TRON",              "binance_pair": "TRXUSDT"},
-    {"symbol": "XMR",  "name": "Monero",            "binance_pair": "XMRUSDT"},
     {"symbol": "KSM",  "name": "Kusama",            "binance_pair": "KSMUSDT"},
     {"symbol": "CRV",  "name": "Curve DAO",         "binance_pair": "CRVUSDT"},
     {"symbol": "GRT",  "name": "The Graph",         "binance_pair": "GRTUSDT"},
@@ -72,18 +68,17 @@ BINANCE_COINS = [
     {"symbol": "EIGEN","name": "EigenLayer",        "binance_pair": "EIGENUSDT"},
     {"symbol": "RENDER","name":"Render",            "binance_pair": "RENDERUSDT"},
     {"symbol": "FET",  "name": "Fetch.ai",          "binance_pair": "FETUSDT"},
-    {"symbol": "AGIX", "name": "SingularityNET",    "binance_pair": "AGIXUSDT"},
 ]
 
 REVOLUT_CRYPTO = [
-    "BTC","ETH","XRP","LTC","BCH","XLM","EOS","BAT","LINK","ATOM",
+    "BTC","ETH","XRP","LTC","BCH","XLM","BAT","LINK","ATOM",
     "DAI","USDC","UNI","AAVE","SNX","COMP","MKR","YFI","SUSHI","CRV",
-    "GRT","1INCH","AXS","MANA","SAND","ENJ","CHZ","VET","FTM","ONE",
-    "ALGO","NEAR","DOT","AVAX","SOL","DOGE","SHIB","MATIC","ADA","BNB",
+    "GRT","1INCH","AXS","MANA","SAND","ENJ","CHZ","VET","ONE",
+    "ALGO","NEAR","DOT","AVAX","SOL","DOGE","SHIB","ADA","BNB",
     "THETA","FIL","ICP","ETC","EGLD","RUNE","CAKE","ZRX","OMG","BAL",
     "GALA","IMX","APE","GMT","OP","ARB","PEPE","FLOKI","BONK","WIF",
-    "SUI","INJ","TIA","JUP","RENDER","FET","AGIX","SEI","PYTH","TRX",
-    "XMR","KSM","IOTA","HOT","ZIL",
+    "SUI","INJ","TIA","JUP","RENDER","FET","SEI","PYTH","TRX",
+    "KSM","IOTA","HOT","ZIL",
 ]
 
 REVOLUT_US_STOCKS = [
@@ -212,8 +207,7 @@ COMMSEC_AU_STOCKS = [
     {"symbol": "BXB.AX",  "name": "Brambles Limited",         "sector": "Industrials"},
     {"symbol": "QAN.AX",  "name": "Qantas Airways",           "sector": "Industrials"},
     {"symbol": "AZJ.AX",  "name": "Aurizon Holdings",          "sector": "Industrials"},  # replaced delisted SYD.AX
-    {"symbol": "ALL.AX",  "name": "Aristocrat Leisure",       "sector": "Consumer Disc."},
-    {"symbol": "QUB.AX",  "name": "Qube Holdings",             "sector": "Consumer Disc."},  # replaced delisted CWN.AX
+    {"symbol": "ALL.AX",  "name": "Aristocrat Leisure",       "sector": "Consumer Disc."},  # replaced delisted CWN.AX
     {"symbol": "TAH.AX",  "name": "Tabcorp Holdings",         "sector": "Consumer Disc."},
     {"symbol": "REA.AX",  "name": "REA Group",                "sector": "Technology"},
     {"symbol": "CAR.AX",  "name": "CAR Group",                "sector": "Technology"},
@@ -240,8 +234,7 @@ COMMSEC_AU_STOCKS = [
     {"symbol": "IAG.AX",  "name": "IAG Insurance",            "sector": "Financials"},
     {"symbol": "SUN.AX",  "name": "Suncorp Group",            "sector": "Financials"},
     {"symbol": "AGL.AX",  "name": "AGL Energy",               "sector": "Utilities"},
-    {"symbol": "ORI.AX",  "name": "Orica Limited",            "sector": "Materials"},
-    {"symbol": "AWC.AX",  "name": "Alumina Limited",           "sector": "Materials"},   # replaced slow IPL.AX
+    {"symbol": "ORI.AX",  "name": "Orica Limited",            "sector": "Materials"},   # replaced slow IPL.AX
     {"symbol": "ING.AX",  "name": "Inghams Group",            "sector": "Consumer Staples"},
     {"symbol": "A2M.AX",  "name": "a2 Milk Company",          "sector": "Consumer Staples"},
     {"symbol": "TWE.AX",  "name": "Treasury Wine Estates",    "sector": "Consumer Staples"},
