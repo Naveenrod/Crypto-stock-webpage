@@ -44,7 +44,7 @@ Vercel functions; in development they are proxied to the deployed site
 ## Architecture — no servers
 
 ```
-GitHub Actions (every 6 h)            GitHub Pages (static JSON)        Vercel (free)
+GitHub Actions (every 6 h)            `data` branch (static JSON)       Vercel (free)
 ┌──────────────────────────┐          ┌──────────────────────────┐      ┌──────────────────────────┐
 │ build_static.py          │ publish  │ /data/picks.json         │      │ React UI  (Vite)         │
 │  • 232 assets            │ ───────► │ /data/assets/*.json      │ ◄─── │   /data/* rewrite        │
@@ -55,15 +55,17 @@ GitHub Actions (every 6 h)            GitHub Pages (static JSON)        Vercel (
 ```
 
 * **Models are trained on a schedule, never while a user waits.** The build runs
-  the full analysis for every asset and publishes plain JSON; the UI reads one
-  ~50 kB file per asset that contains its prediction, backtest signals and chart.
+  the full analysis for every asset and publishes plain JSON to the `data`
+  branch (one force-pushed commit per run, so history never grows); the UI
+  reads one ~50 kB file per asset that contains its prediction, backtest
+  signals and chart.
 * **Unchanged candles are not recomputed.** The build compares each asset's
   latest daily candle with the previously published file and reuses it when
   identical, so most runs retrain only what moved.
 * **Live prices and news** come from three small Vercel functions
   (`frontend/api/`), cached at the edge for 60 s / 5 min so a thousand visitors
   cost a handful of upstream calls.
-* Nothing to host, patch or pay for: GitHub Actions and Pages are free for public
+* Nothing to host, patch or pay for: GitHub Actions is free for public
   repositories; Vercel's Hobby plan covers the UI and functions.
 
 ```
@@ -75,10 +77,10 @@ financial-analyzer/
 │   │   └── predictor.py        # ML ensemble, purged walk-forward backtest
 │   └── data/asset_lists.py     # Binance / Revolut / CommSec asset lists
 ├── .github/workflows/
-│   └── data-refresh.yml        # Cron + manual + on backend change → Pages
+│   └── data-refresh.yml        # Cron + manual + on backend change → data branch
 └── frontend/                   # React + TypeScript + Vite, deployed on Vercel
     ├── api/                    # Vercel functions: quotes, quote, news
-    ├── vercel.json             # /data/* → GitHub Pages rewrite + cache headers
+    ├── vercel.json             # /data/* → data branch rewrite + cache headers
     └── src/
         ├── App.tsx             # Tabs, theme toggle
         ├── api/client.ts       # Reads /data (static) and /api (functions)
@@ -133,17 +135,16 @@ the inputs are daily candles.
 * Each run writes `manifest.json` (counts, duration, failures, how many assets
   were reused vs retrained) and the step summary shows the same numbers.
 * `REFRESH_HOURS` (default 6) controls the advertised refresh cadence,
-  `REUSE_BASE_URL` points the reuse check at the published data set.
+  `REUSE_BASE_URL` points the reuse check at the published data set (the data branch).
 
 ## Deployment
 
 | Part | Where | How |
 |---|---|---|
-| Data | GitHub Pages | Published by the workflow (artifact deploy, no commits). URL: `https://naveenrod.github.io/Crypto-stock-webpage/data/` |
-| Frontend + functions | Vercel (project root `frontend/`) | Deploys automatically from `main`; `vercel.json` rewrites `/data/*` to Pages |
+| Data | `data` branch of this repo | Force-pushed by the workflow; served raw at `https://raw.githubusercontent.com/Naveenrod/Crypto-stock-webpage/data/data/` |
+| Frontend + functions | Vercel (project root `frontend/`) | Deploys automatically from `main`; `vercel.json` rewrites `/data/*` to the data branch and tells Vercel not to build that branch |
 
-One-time setup: GitHub → Settings → Pages → Source: **GitHub Actions** (the
-workflow tries to enable this itself on its first run).
+No one-time setup is required beyond the Vercel project itself.
 
 ## Data Sources
 

@@ -7,9 +7,10 @@ export default defineConfig({
     port: 3000,
     proxy: {
       // Static data: served from frontend/public/data when ./start.sh built it
-      // locally; otherwise fall back to the published GitHub Pages data set.
+      // locally; set VITE_USE_REMOTE_DATA=1 to use the published data branch instead.
       ...(process.env.VITE_USE_REMOTE_DATA
-        ? { "/data": { target: "https://naveenrod.github.io/Crypto-stock-webpage", changeOrigin: true } }
+        ? { "/data": { target: "https://raw.githubusercontent.com", changeOrigin: true,
+                       rewrite: (p: string) => p.replace(/^\/data/, "/Naveenrod/Crypto-stock-webpage/data/data") } }
         : {}),
       // Live quotes + news are Vercel functions (frontend/api). In dev, proxy
       // them to the deployed site, or run `npx vercel dev` instead of `vite`.

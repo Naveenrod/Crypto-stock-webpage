@@ -1,9 +1,7 @@
 # Builds the FinSight data set (ML predictions, backtests, charts, Top-5 picks)
-# and publishes it to GitHub Pages. The frontend on Vercel reads these files
-# through a /data/* rewrite, so there is no backend server to run or pay for.
-#
-# First run: the configure-pages step enables Pages for the repository. If it
-# cannot (permissions), enable it once under Settings → Pages → Source: GitHub Actions.
+# and publishes it to the `data` branch as a single commit (force-pushed each
+# run, so history never grows). Vercel rewrites /data/* to that branch's raw
+# files, so there is no backend server to run or pay for, and nothing to enable.
 name: Refresh market data
 
 on:
@@ -17,17 +15,18 @@ on:
       - ".github/workflows/data-refresh.yml"
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write                 # push to the data branch
 
 concurrency:
   group: data-refresh
   cancel-in-progress: false
 
+env:
+  DATA_BRANCH: data
+
 jobs:
   build:
-    name: Analyse all assets
+    name: Analyse all assets and publish
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -46,13 +45,14 @@ jobs:
         env:
           OMP_NUM_THREADS: "1"
           PYTHONUNBUFFERED: "1"
-          # Reuse yesterday's result for assets whose latest candle is unchanged
-          REUSE_BASE_URL: https://naveenrod.github.io/Crypto-stock-webpage/data
+          # Reuse the previous result for assets whose latest candle is unchanged
+          REUSE_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/data/data
         run: python backend/scripts/build_static.py --out site/data --workers 2 --timeout 2100
 
       - name: Summary
+        id: summary
         run: |
-          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY" | head -1 | sed 's/\*\*//g; s/^/line=/' >> "$GITHUB_OUTPUT"
           import json; m = json.load(open("site/data/manifest.json"))
           print(f"**{m['assets_ok']}/{m['assets_total']} assets analysed in {m['duration_seconds']} s** "
                 f"({m.get('reused', 0)} reused unchanged, {m.get('recomputed', 0)} recomputed)")
@@ -60,21 +60,20 @@ jobs:
           if m["missing"]: print("\nTimed out: " + ", ".join(m["missing"]))
           PY
 
-      - uses: actions/configure-pages@v5
-        with:
-          enablement: true
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-
-  deploy:
-    name: Publish to GitHub Pages
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish to the data branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # Tell Vercel not to build this branch (it has no app, only data).
+          mkdir -p site/frontend
+          echo '{ "git": { "deploymentEnabled": { "data": false } } }' > site/frontend/vercel.json
+          echo "FinSight generated data — see main branch. Updated $(date -u +'%Y-%m-%d %H:%M UTC')." > site/README.md
+          cd site
+          git init -q -b "$DATA_BRANCH"
+          git config user.name  "finsight-data"
+          git config user.email "finsight-data@users.noreply.github.com"
+          git add -A
+          git -c commit.gpgsign=false commit -q -m "data: $(date -u +'%Y-%m-%dT%H:%MZ') — ${{ steps.summary.outputs.line }}"
+          git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$DATA_BRANCH"
+          echo "published $(find data -type f | wc -l) files to branch $DATA_BRANCH"

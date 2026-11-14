@@ -1,15 +1,17 @@
 {
+  "git": { "deploymentEnabled": { "data": false } },
   "rewrites": [
     {
       "source": "/data/:path*",
-      "destination": "https://naveenrod.github.io/Crypto-stock-webpage/data/:path*"
+      "destination": "https://raw.githubusercontent.com/Naveenrod/Crypto-stock-webpage/data/data/:path*"
     }
   ],
   "headers": [
     {
       "source": "/data/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, s-maxage=300, stale-while-revalidate=900" }
+        { "key": "Cache-Control", "value": "public, s-maxage=300, stale-while-revalidate=900" },
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" }
       ]
     }
   ]
