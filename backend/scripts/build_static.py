@@ -89,7 +89,8 @@ def analyse_one(task: tuple[str, str, str]) -> dict:
             last = prev["chart"][-1] if prev and prev.get("chart") else None
             if (last and prev.get("prediction") and not prev["prediction"].get("error")
                     and last["date"] == df["date"].iloc[-1].strftime("%Y-%m-%d")
-                    and abs(float(last["close"]) - float(df["close"].iloc[-1])) < 1e-9
+                    # published closes are rounded to 6 dp; compare at that precision
+                    and abs(float(last["close"]) - round(float(df["close"].iloc[-1]), 6)) <= 1e-6
                     and len(prev["chart"]) >= len(df) - 1):
                 return {"market": market, "symbol": symbol, "ok": True, "reused": True,
                         "prediction": prev["prediction"], "signals": prev.get("signals", []),
