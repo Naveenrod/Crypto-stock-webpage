@@ -137,6 +137,18 @@ the inputs are daily candles.
 ML work runs on dedicated thread pools, never on the API event loop, so health
 checks, price lists and charts stay fast while a prediction or scan is running.
 
+## Deployment
+
+| Part | Where | How |
+|---|---|---|
+| Frontend | Vercel | Deploys automatically from `main`; `frontend/vercel.json` proxies `/api/*` to the Fly backend |
+| Backend | Fly.io (`finsight-backend`, Sydney) | `.github/workflows/fly-deploy.yml` runs `fly deploy` on pushes to `main` that touch `backend/` once the `FLY_API_TOKEN` secret is set. Manual fallback: `cd backend && fly deploy` |
+
+The Fly VM is `shared-cpu-1x` (6.25 % CPU baseline, bursts from a credit balance).
+The hourly background scan uses about 90 s of CPU on a modern core, which fits
+the baseline; if the app gets busier, `fly scale vm shared-cpu-2x` is the cheapest
+way to keep predictions snappy during a scan.
+
 > **Note**: Financial markets are inherently unpredictable. Even the best ML models
 > achieve 55-65% direction accuracy. The backtested accuracy shown reflects
 > historical performance — not a guarantee of future results.

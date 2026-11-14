@@ -1,0 +1,49 @@
+# Deploys the FastAPI backend to Fly.io whenever backend code lands on main.
+#
+# One-time setup: create a deploy token with `fly tokens create deploy -x 999999h`
+# (run inside backend/, where fly.toml lives) and add it to the repository as the
+# secret FLY_API_TOKEN (Settings → Secrets and variables → Actions). Until the
+# secret exists the workflow skips the deploy step instead of failing.
+name: Deploy backend to Fly.io
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/fly-deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: fly deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for FLY_API_TOKEN
+        id: token
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -n "$FLY_API_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::FLY_API_TOKEN secret is not set — skipping deploy. Run 'fly deploy' from backend/ manually."
+          fi
+
+      - name: Set up flyctl
+        if: steps.token.outputs.present == 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        if: steps.token.outputs.present == 'true'
+        working-directory: backend
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only
