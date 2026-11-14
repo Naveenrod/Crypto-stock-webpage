@@ -14,7 +14,7 @@ const BRANCH   = process.env.GITHUB_WORKFLOW_REF ?? "main";
 const COOLDOWN = Number(process.env.REFRESH_COOLDOWN_SECONDS ?? 600);
 const TOKEN    = process.env.GITHUB_DISPATCH_TOKEN;
 
-interface Run { id: number; status: string; conclusion: string | null; html_url: string; created_at: string; updated_at: string; event: string }
+interface Run { id: number; status: string; conclusion: string | null; created_at: string; updated_at: string; event: string }
 
 const gh = (path: string, init: RequestInit = {}) =>
   fetchWithTimeout(`https://api.github.com${path}`, 8000, {
@@ -33,7 +33,8 @@ async function latestRun(): Promise<Run | null> {
   if (!r.ok) throw new Error(`GitHub responded ${r.status}`);
   const j = (await r.json()) as any;
   const run = j?.workflow_runs?.[0];
-  return run ? { id: run.id, status: run.status, conclusion: run.conclusion, html_url: run.html_url,
+  // Only what the UI needs — no URLs or repository details leave the function.
+  return run ? { id: run.id, status: run.status, conclusion: run.conclusion,
                  created_at: run.created_at, updated_at: run.updated_at, event: run.event } : null;
 }
 

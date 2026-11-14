@@ -251,7 +251,7 @@ export const fetchTopPicks = (): Promise<TopPicksResult> =>
   data.get<TopPicksResult>("/picks.json").then(r => r.data);
 
 // ── On-demand refresh (starts the GitHub Actions data build) ─
-export interface RefreshRun { id: number; status: string; conclusion: string | null; html_url: string; created_at: string; updated_at: string; event: string }
+export interface RefreshRun { id: number; status: string; conclusion: string | null; created_at: string; updated_at: string; event: string }
 export interface RefreshStatus {
   configured: boolean;
   running: boolean;

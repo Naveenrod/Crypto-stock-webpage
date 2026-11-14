@@ -189,6 +189,13 @@ function CategorySection({ title, emoji, picks, market, scanning, onOpen }: {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
+function ElapsedSince({ iso }: { iso: string }) {
+  const [, tick] = useState(0);
+  useEffect(() => { const id = setInterval(() => tick(t => t + 1), 1000); return () => clearInterval(id); }, []);
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  return <span className="ml-auto text-muted tabular-nums whitespace-nowrap">{Math.floor(s / 60)}:{String(s % 60).padStart(2, "0")}</span>;
+}
+
 function RefreshButton({ refresh }: { refresh: ReturnType<typeof useOnDemandRefresh> }) {
   const cooldown = refresh.status?.cooldown_seconds_left ?? 0;
   const unavailable = refresh.statusError ? "Refresh unavailable" : refresh.status && !refresh.status.configured ? "Refresh not set up" : null;
@@ -387,8 +394,8 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
               ? "Retraining finished — loading the new picks…"
               : "Retraining every asset on GitHub Actions — usually 2–4 minutes. Only assets whose candles changed are recomputed."}
           </span>
-          {refresh.status?.run?.html_url && refresh.status.running && (
-            <a href={refresh.status.run.html_url} target="_blank" rel="noopener noreferrer" className="ml-auto text-accent whitespace-nowrap">view run</a>
+          {refresh.status?.run?.created_at && refresh.status.running && (
+            <ElapsedSince iso={refresh.status.run.created_at} />
           )}
         </div>
       )}
