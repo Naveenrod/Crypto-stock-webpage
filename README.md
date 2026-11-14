@@ -2,6 +2,8 @@
 
 Real-time crypto & stock market analysis with ML predictions, backtesting, and news aggregation.
 
+**Live:** https://www.crypto-fininsight.xyz
+
 ## Features
 
 | Feature | Details |
@@ -143,7 +145,7 @@ the inputs are daily candles.
 | Part | Where | How |
 |---|---|---|
 | Data | `data` branch of this repo | Force-pushed by the workflow; served raw at `https://raw.githubusercontent.com/Naveenrod/Crypto-stock-webpage/data/data/` |
-| Frontend + functions | Vercel (project root `frontend/`) | Deploys automatically from `main`; `vercel.json` rewrites `/data/*` to the data branch and tells Vercel not to build that branch |
+| Frontend + functions | Vercel (project root `frontend/`), served at `www.crypto-fininsight.xyz` | Deploys automatically from `main`; `vercel.json` rewrites `/data/*` to the data branch and tells Vercel not to build that branch |
 
 One optional setting enables the **Refresh now** button: add a Vercel
 environment variable `GITHUB_DISPATCH_TOKEN` holding a fine-grained GitHub

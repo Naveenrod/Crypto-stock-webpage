@@ -15,7 +15,7 @@ export default defineConfig({
       // Live quotes + news are Vercel functions (frontend/api). In dev, proxy
       // them to the deployed site, or run `npx vercel dev` instead of `vite`.
       "/api": {
-        target: process.env.VITE_API_PROXY_TARGET || "https://crypto-stock-webpage.vercel.app",
+        target: process.env.VITE_API_PROXY_TARGET || "https://www.crypto-fininsight.xyz",
         changeOrigin: true,
       },
     },
