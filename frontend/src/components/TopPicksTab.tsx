@@ -71,7 +71,7 @@ function WhyPopover({ indicators, signal }: { indicators: Indicators; signal: st
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(o => !o)}
-        className="inline-flex items-center gap-1 min-h-[32px] text-xs text-muted hover:text-accent"
+        className="inline-flex items-center gap-1 min-h-[40px] text-xs text-muted hover:text-accent"
       >
         <Info className="w-3.5 h-3.5" /> Why this pick?
       </button>
@@ -126,11 +126,11 @@ function PickCard({ pick, rank, onOpen }: { pick: TopPick; rank: number; onOpen:
 
       <div className="grid grid-cols-3 gap-1">
         <div className="bg-card border border-border rounded-lg p-1.5 text-center">
-          <p className="text-[10px] text-muted leading-tight">ML prob.</p>
+          <p className="text-[11px] text-muted leading-tight">ML prob.</p>
           <p className="text-xs font-mono font-bold text-fg2 mt-0.5">{pick.ml_probability}%</p>
         </div>
         <div className="bg-card border border-border rounded-lg p-1.5 text-center">
-          <p className="text-[10px] text-muted leading-tight">{pick.backtest_accuracy != null ? "Backtest" : "Confidence"}</p>
+          <p className="text-[11px] text-muted leading-tight">{pick.backtest_accuracy != null ? "Backtest" : "Confidence"}</p>
           <p className={clsx("text-xs font-mono font-bold mt-0.5",
             pick.backtest_accuracy != null
               ? pick.backtest_accuracy >= 55 ? "text-success" : pick.backtest_accuracy >= 45 ? "text-warning" : "text-danger"
@@ -139,7 +139,7 @@ function PickCard({ pick, rank, onOpen }: { pick: TopPick; rank: number; onOpen:
           </p>
         </div>
         <div className="bg-card border border-border rounded-lg p-1.5 text-center">
-          <p className="text-[10px] text-muted leading-tight">Trend</p>
+          <p className="text-[11px] text-muted leading-tight">Trend</p>
           <div className="mt-0.5 flex justify-center"><TrendBadge trend={pick.trend} /></div>
         </div>
       </div>
@@ -257,7 +257,7 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
               type="button"
               onClick={() => rescan.mutate()}
               disabled={scanning || rescan.isPending}
-              className={clsx("inline-flex items-center gap-1.5 px-3 min-h-[36px] rounded-lg text-xs font-medium transition-colors",
+              className={clsx("inline-flex items-center gap-1.5 px-3 min-h-[40px] rounded-lg text-xs font-medium transition-colors",
                 "bg-surface border border-border text-muted hover:border-accent/40 hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed")}
             >
               <RefreshCw className={clsx("w-3.5 h-3.5", scanning && "animate-spin")} />

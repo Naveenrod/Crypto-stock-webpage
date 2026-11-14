@@ -57,7 +57,7 @@ function Movers({ assets, onSelect }: { assets: CryptoAsset[]; onSelect: (symbol
       type="button"
       onClick={() => onSelect(a.symbol)}
       className={clsx(
-        "flex items-center gap-1.5 px-3 min-h-[36px] rounded-full border text-xs font-medium whitespace-nowrap transition-colors",
+        "flex items-center gap-1.5 px-3 min-h-[40px] rounded-full border text-xs font-medium whitespace-nowrap transition-colors",
         up ? "border-success/30 bg-success/10 text-success hover:bg-success/20"
            : "border-danger/30 bg-danger/10 text-danger hover:bg-danger/20",
       )}
@@ -119,7 +119,7 @@ export default function CryptoTab({ jumpTo }: { jumpTo: JumpTarget | null }) {
             type="button"
             aria-pressed={platform === p.id}
             onClick={() => setPlatform(p.id)}
-            className={clsx("min-h-[40px] rounded-md text-xs font-medium transition-colors",
+            className={clsx("min-h-[44px] sm:min-h-[40px] rounded-md text-xs font-medium transition-colors",
               platform === p.id ? "bg-accent text-white shadow-sm" : "text-muted hover:text-fg")}
           >
             {p.label}

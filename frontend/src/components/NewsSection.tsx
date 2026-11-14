@@ -119,7 +119,7 @@ export default function NewsSection({ category = "all", maxItems = 40, symbol, m
                 type="button"
                 aria-pressed={cat === activeCategory}
                 onClick={() => setActiveCategory(cat)}
-                className={clsx("px-3 min-h-[36px] rounded-full text-xs font-medium whitespace-nowrap transition-colors border",
+                className={clsx("px-3 min-h-[40px] rounded-full text-xs font-medium whitespace-nowrap transition-colors border",
                   cat === activeCategory ? "bg-accent text-white border-accent" : "bg-card text-muted border-border hover:text-fg")}
               >
                 {CATEGORY_LABELS[cat]}

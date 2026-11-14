@@ -43,7 +43,7 @@ export default function AssetDetail({ market, symbol, header, newsCategory, curr
             aria-selected={panel === id}
             onClick={() => setPanel(id)}
             className={clsx(
-              "flex items-center justify-center gap-1.5 min-h-[40px] rounded-md text-xs sm:text-sm font-medium transition-colors",
+              "flex items-center justify-center gap-1.5 min-h-[44px] sm:min-h-[40px] rounded-md text-xs sm:text-sm font-medium transition-colors",
               panel === id ? "bg-accent text-white shadow-sm" : "text-muted hover:text-fg",
             )}
           >

@@ -139,7 +139,7 @@ export default function PredictionCard({ market, symbol, currency = "$" }: Props
                 <div key={part.label} className="grid grid-cols-[7rem_1fr_3.5rem] sm:grid-cols-[9rem_1fr_3.5rem] items-center gap-2 text-xs">
                   <span className="text-muted truncate">{part.label}</span>
                   <div className="h-1.5 bg-surface border border-border rounded-full overflow-hidden">
-                    <div className={clsx("h-full rounded-full", neg ? "bg-danger" : "bg-accent")} style={{ width: `${neg ? 100 : pct}%`, opacity: neg ? 0.5 : 1 }} />
+                    <div className={clsx("h-full rounded-full", neg ? "bg-danger" : "bg-accent")} style={{ width: `${neg ? Math.min(100, (Math.abs(part.points) / part.max) * 100) : pct}%` }} />
                   </div>
                   <span className={clsx("font-mono text-right", neg ? "text-danger" : "text-fg2")}>{part.points > 0 ? "+" : ""}{part.points}/{part.max}</span>
                 </div>

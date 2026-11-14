@@ -94,7 +94,7 @@ export default function PriceChart({ market, symbol, currency = "$" }: Props) {
               type="button"
               aria-pressed={period === p}
               onClick={() => setPeriod(p)}
-              className={clsx("px-2 sm:px-2.5 min-h-[32px] rounded-md text-xs font-medium transition-colors",
+              className={clsx("px-2 sm:px-2.5 min-h-[36px] rounded-md text-xs font-medium transition-colors",
                 period === p ? "bg-accent text-white" : "text-muted hover:text-fg")}
             >
               {p.toUpperCase()}

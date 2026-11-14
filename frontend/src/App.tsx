@@ -70,7 +70,7 @@ export default function App() {
               onClick={toggle}
               aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
               title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-              className="w-10 h-10 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:border-accent/40 flex items-center justify-center transition-colors"
+              className="w-11 h-11 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:border-accent/40 flex items-center justify-center transition-colors"
             >
               {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
