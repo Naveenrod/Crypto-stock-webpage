@@ -1,7 +1,7 @@
 // GET /api/quote?symbol=AAPL  (or CBA.AX)
 // Single stock quote from Yahoo Finance's chart endpoint (no cookie/crumb needed).
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { fetchWithTimeout, send, str } from "./_shared";
+import { fetchWithTimeout, send, str } from "./_shared.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const symbol = str(req.query.symbol).toUpperCase().trim();

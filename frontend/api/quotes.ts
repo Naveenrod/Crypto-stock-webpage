@@ -2,7 +2,7 @@
 // Batch 24 h tickers from Binance (public market-data mirror first: api.binance.com
 // is geo-blocked from US data centres such as Vercel's default region).
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { fetchWithTimeout, send, str } from "./_shared";
+import { fetchWithTimeout, send, str } from "./_shared.js";
 
 const HOSTS = ["https://data-api.binance.vision", "https://api.binance.com"];
 

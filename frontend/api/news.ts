@@ -2,7 +2,7 @@
 // Aggregates the RSS feeds the Python scraper used, in parallel, cached 5 min.
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { XMLParser } from "fast-xml-parser";
-import { fetchWithTimeout, send, str } from "./_shared";
+import { fetchWithTimeout, send, str } from "./_shared.js";
 
 export const config = { maxDuration: 20 };
 
