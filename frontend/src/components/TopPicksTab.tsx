@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Trophy, RefreshCw, Clock, CheckCircle, TrendingUp, TrendingDown, Minus,
   AlertTriangle, Cpu, ChevronRight, Info, CalendarClock,
 } from "lucide-react";
 import clsx from "clsx";
-import { fetchTopPicks, fetchCryptoQuotes, TopPick, TopPicksResult, Indicators, Market } from "../api/client";
+import { fetchTopPicks, fetchCryptoQuotes, getRefreshStatus, startRefresh, setDataVersion, RefreshStatus, TopPick, TopPicksResult, Indicators, Market } from "../api/client";
 import { fmtPrice, fmtPct, fmtDate, minutesAgo } from "../utils/format";
 
 interface Props { onOpenAsset: (market: Market, symbol: string) => void }
@@ -188,6 +188,79 @@ function CategorySection({ title, emoji, picks, market, scanning, onOpen }: {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
+function RefreshButton({ refresh }: { refresh: ReturnType<typeof useOnDemandRefresh> }) {
+  const cooldown = refresh.status?.cooldown_seconds_left ?? 0;
+  const disabled = refresh.running || refresh.start.isPending || cooldown > 0;
+  const label = refresh.running ? "Retraining…" : refresh.start.isPending ? "Starting…"
+              : cooldown > 0 ? `Refresh in ${Math.ceil(cooldown / 60)} min` : "Refresh now";
+  return (
+    <button
+      type="button"
+      onClick={() => refresh.start.mutate()}
+      disabled={disabled}
+      title={cooldown > 0 && !refresh.running ? "The data set was refreshed recently" : "Retrain every asset now (takes a few minutes)"}
+      className={clsx("inline-flex items-center gap-1.5 px-3 min-h-[40px] rounded-lg text-xs font-medium transition-colors",
+        "bg-surface border border-border text-fg2 hover:border-accent/40 hover:text-fg disabled:opacity-60 disabled:cursor-not-allowed")}
+    >
+      <RefreshCw className={clsx("w-3.5 h-3.5", (refresh.running || refresh.start.isPending) && "animate-spin")} />
+      {label}
+    </button>
+  );
+}
+
+/** "Refresh now": starts the GitHub Actions data build and swaps in the result when it lands. */
+function useOnDemandRefresh(currentComputedAt: string | null | undefined) {
+  const qc = useQueryClient();
+  const [kickedAt, setKickedAt] = useState<number | null>(null);
+  const [landing, setLanding] = useState(false);          // run finished, waiting for new data to appear
+  const prevRunRef = useRef<{ id: number; running: boolean } | null>(null);
+
+  const statusQ = useQuery<RefreshStatus>({
+    queryKey: ["refresh-status"],
+    queryFn:  getRefreshStatus,
+    staleTime: 10_000,
+    retry: 1,
+    refetchInterval: q => {
+      const st = q.state.data;
+      if (!st?.configured) return false;
+      const recentlyKicked = kickedAt !== null && Date.now() - kickedAt < 60_000;
+      return st.running || recentlyKicked || landing ? 10_000 : 60_000;
+    },
+  });
+  const start = useMutation({
+    mutationFn: startRefresh,
+    onSuccess: st => { if (st.started) setKickedAt(Date.now()); qc.setQueryData(["refresh-status"], st); },
+  });
+
+  // Detect "was running → finished successfully" and pull the fresh data set.
+  const st = statusQ.data;
+  useEffect(() => {
+    const run = st?.run;
+    if (!run) return;
+    const prev = prevRunRef.current;
+    if (prev && prev.id === run.id && prev.running && !st.running && run.conclusion === "success") {
+      setLanding(true);
+      setDataVersion(`r${run.id}`);
+      qc.invalidateQueries({ queryKey: PICKS_KEY });
+    }
+    prevRunRef.current = { id: run.id, running: !!st?.running };
+  }, [st?.run?.id, st?.running, st?.run?.conclusion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // While "landing", re-read the data with new cache-busters until computed_at changes (CDN lag).
+  const landingSinceRef = useRef<number | null>(null);
+  const landedFromRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!landing) { landingSinceRef.current = null; landedFromRef.current = undefined; return; }
+    if (landingSinceRef.current === null) { landingSinceRef.current = Date.now(); landedFromRef.current = currentComputedAt; }
+    if (currentComputedAt !== landedFromRef.current || Date.now() - landingSinceRef.current > 120_000) { setLanding(false); setKickedAt(null); return; }
+    const t = setTimeout(() => { setDataVersion(`r${st?.run?.id ?? 0}-${Date.now()}`); qc.invalidateQueries({ queryKey: PICKS_KEY }); }, 10_000);
+    return () => clearTimeout(t);
+  }, [landing, currentComputedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const running = !!st?.running || (kickedAt !== null && Date.now() - kickedAt < 60_000 && !st?.run?.conclusion) || landing;
+  return { status: st, running, landing, start, kickedAt };
+}
+
 export default function TopPicksTab({ onOpenAsset }: Props) {
   const { data, isLoading, error, refetch } = useQuery<TopPicksResult>({
     queryKey: PICKS_KEY,
@@ -206,6 +279,8 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
     staleTime: 60_000,
     refetchInterval: 60_000,
   });
+
+  const refresh = useOnDemandRefresh(data?.computed_at);
 
   if (isLoading) {
     return (
@@ -254,19 +329,35 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
             {data.total_scanned} of {totalAssets} assets ranked by composite score{asOf && <> · candles to {fmtDate(asOf)}</>}
           </p>
         </div>
-        <div className="flex items-center gap-3 text-xs text-muted">
+        <div className="flex items-center gap-3 text-xs text-muted flex-wrap">
           <span className="inline-flex items-center gap-1.5" title={data.computed_at ?? undefined}>
             {stale ? <Clock className="w-3.5 h-3.5 text-warning" /> : <CheckCircle className="w-3.5 h-3.5 text-success" />}
             models retrained {mins < 60 ? `${mins} min` : `${Math.round(mins / 60)} h`} ago
           </span>
-          {nextRefresh && !stale && (
+          {nextRefresh && !stale && !refresh.running && (
             <span className="hidden sm:inline-flex items-center gap-1.5">
               <CalendarClock className="w-3.5 h-3.5" />
               next refresh {nextRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
+          {refresh.status?.configured && (
+            <RefreshButton refresh={refresh} />
+          )}
         </div>
       </div>
+      {refresh.running && (
+        <div className="card px-4 py-2.5 flex items-center gap-3 text-xs" aria-live="polite">
+          <RefreshCw className="w-4 h-4 text-accent animate-spin flex-shrink-0" />
+          <span className="text-fg2">
+            {refresh.landing
+              ? "Retraining finished — loading the new picks…"
+              : "Retraining every asset on GitHub Actions — usually 2–4 minutes. Only assets whose candles changed are recomputed."}
+          </span>
+          {refresh.status?.run?.html_url && refresh.status.running && (
+            <a href={refresh.status.run.html_url} target="_blank" rel="noopener noreferrer" className="ml-auto text-accent whitespace-nowrap">view run</a>
+          )}
+        </div>
+      )}
 
       {/* Picks */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
@@ -277,7 +368,7 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
 
       <p className="text-center text-[11px] text-muted pb-2">
         Rankings combine an ML ensemble (Random Forest + Gradient Boosting + XGBoost) with 30+ technical indicators,
-        retrained on every asset every 6 hours. Tap a pick to open its chart, full prediction and backtest. Not financial advice.
+        retrained hourly. Tap a pick to open its chart, full prediction and backtest. Not financial advice.
       </p>
     </div>
   );

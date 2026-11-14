@@ -11,6 +11,18 @@ import axios from "axios";
 const data = axios.create({ baseURL: "/data", timeout: 20_000 });
 const api  = axios.create({ baseURL: "/api",  timeout: 20_000 });
 
+// Every /data request carries a version query: a 5-minute bucket by default,
+// or the id of a just-finished refresh run so edge/CDN caches are bypassed.
+let dataVersion: string | null = null;
+data.interceptors.request.use(cfg => {
+  cfg.params = { ...(cfg.params ?? {}), v: dataVersion ?? String(Math.floor(Date.now() / 300_000)) };
+  return cfg;
+});
+export function setDataVersion(v: string | null) {
+  dataVersion = v;
+  fileCache.clear();
+}
+
 // ── Types ───────────────────────────────────────────────────
 export type Market = "crypto" | "us" | "au";
 
@@ -234,6 +246,19 @@ export interface TopPicksResult {
   stale?:        boolean;
 }
 
-/** Pre-computed by the scheduled data build; a small cache-buster keeps a long-open tab fresh. */
+/** Pre-computed by the data build (see setDataVersion for cache-busting after a refresh). */
 export const fetchTopPicks = (): Promise<TopPicksResult> =>
-  data.get<TopPicksResult>("/picks.json", { params: { v: Math.floor(Date.now() / 300_000) } }).then(r => r.data);
+  data.get<TopPicksResult>("/picks.json").then(r => r.data);
+
+// ── On-demand refresh (starts the GitHub Actions data build) ─
+export interface RefreshRun { id: number; status: string; conclusion: string | null; html_url: string; created_at: string; updated_at: string; event: string }
+export interface RefreshStatus {
+  configured: boolean;
+  running: boolean;
+  run: RefreshRun | null;
+  cooldown_seconds_left: number;
+  started?: boolean;
+  reason?: "already_running" | "cooldown";
+}
+export const getRefreshStatus = () => api.get<RefreshStatus>("/refresh").then(r => r.data);
+export const startRefresh     = () => api.post<RefreshStatus>("/refresh").then(r => r.data);

@@ -130,8 +130,9 @@ the inputs are daily candles.
 
 ### Data refresh
 
-* `.github/workflows/data-refresh.yml` runs every 6 hours, on demand (Actions →
-  "Refresh market data" → Run workflow) and whenever `backend/` changes on `main`.
+* `.github/workflows/data-refresh.yml` runs hourly, on demand (the **Refresh now**
+  button, or Actions → "Refresh market data" → Run workflow) and whenever
+  `backend/` changes on `main`.
 * Each run writes `manifest.json` (counts, duration, failures, how many assets
   were reused vs retrained) and the step summary shows the same numbers.
 * `REFRESH_HOURS` (default 6) controls the advertised refresh cadence,
@@ -144,7 +145,12 @@ the inputs are daily candles.
 | Data | `data` branch of this repo | Force-pushed by the workflow; served raw at `https://raw.githubusercontent.com/Naveenrod/Crypto-stock-webpage/data/data/` |
 | Frontend + functions | Vercel (project root `frontend/`) | Deploys automatically from `main`; `vercel.json` rewrites `/data/*` to the data branch and tells Vercel not to build that branch |
 
-No one-time setup is required beyond the Vercel project itself.
+One optional setting enables the **Refresh now** button: add a Vercel
+environment variable `GITHUB_DISPATCH_TOKEN` holding a fine-grained GitHub
+personal access token scoped to this repository with *Actions: Read and write*
+(Vercel → Project → Settings → Environment Variables, then redeploy). The
+button is hidden until the token exists, and refreshes are limited to one per
+10 minutes (`REFRESH_COOLDOWN_SECONDS`).
 
 ## Data Sources
 
