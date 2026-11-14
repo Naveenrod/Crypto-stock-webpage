@@ -34,7 +34,7 @@ function StockRow({ market, asset, selected, onSelect }: { market: StockMarket; 
       )}
     >
       <div className="w-9 h-9 rounded-lg bg-surface border border-border flex items-center justify-center flex-shrink-0">
-        <span className={clsx("text-[10px] font-bold", META[market].avatar)}>{displaySymbol(market, asset.symbol).slice(0, 4)}</span>
+        <span className={clsx("text-[11px] font-bold", META[market].avatar)}>{displaySymbol(market, asset.symbol).slice(0, 4)}</span>
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">

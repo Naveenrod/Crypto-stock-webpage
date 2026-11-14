@@ -92,12 +92,12 @@ function PickCard({ pick, rank, onOpen }: { pick: TopPick; rank: number; onOpen:
   const isUp = pick.change_24h >= 0;
   const color = pick.signal === "BUY" ? "bg-success" : pick.signal === "SELL" ? "bg-danger" : "bg-warning";
   return (
+    // The whole card is clickable for pointer users; the "Analyse" button is the
+    // accessible (keyboard / screen-reader) path, so no nested-interactive ARIA.
     <div
-      role="button"
-      tabIndex={0}
+      data-pick={pick.symbol}
       onClick={onOpen}
-      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
-      className="group bg-surface border border-border rounded-xl p-3 space-y-2.5 hover:border-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent cursor-pointer transition-colors"
+      className="group bg-surface border border-border rounded-xl p-3 space-y-2.5 hover:border-accent/50 cursor-pointer transition-colors"
     >
       <div className="flex items-start gap-2">
         <RankBadge rank={rank} />
@@ -146,9 +146,14 @@ function PickCard({ pick, rank, onOpen }: { pick: TopPick; rank: number; onOpen:
 
       <div className="flex items-center justify-between gap-2">
         <WhyPopover indicators={pick.indicators} signal={pick.signal} />
-        <span className="inline-flex items-center gap-0.5 text-xs text-accent opacity-80 group-hover:opacity-100">
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); onOpen(); }}
+          aria-label={`Analyse ${pick.symbol.replace(/\.AX$/, "")}`}
+          className="inline-flex items-center gap-0.5 min-h-[40px] px-1 text-xs font-medium text-accent opacity-80 group-hover:opacity-100 rounded-md"
+        >
           Analyse <ChevronRight className="w-3.5 h-3.5" />
-        </span>
+        </button>
       </div>
     </div>
   );

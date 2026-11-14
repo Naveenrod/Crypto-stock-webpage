@@ -27,7 +27,7 @@ function AssetRow({ asset, selected, onSelect }: { asset: CryptoAsset; selected:
       )}
     >
       <div className="w-9 h-9 rounded-full bg-surface border border-border flex items-center justify-center flex-shrink-0">
-        <span className="text-[10px] font-bold text-accent">{asset.symbol.slice(0, 4)}</span>
+        <span className="text-[11px] font-bold text-accent">{asset.symbol.slice(0, 4)}</span>
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
