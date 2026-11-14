@@ -11,6 +11,7 @@ import { fmtPrice, fmtPct, fmtDate, minutesAgo } from "../utils/format";
 interface Props { onOpenAsset: (market: Market, symbol: string) => void }
 
 const PICKS_KEY = ["picks", "top5"];
+const STALE_AFTER_MS = 2 * 60 * 60_000;   // auto-refresh when the data set is older than this
 
 // ── Small presentational pieces ───────────────────────────────────────────────
 const RANK_STYLES: Record<number, string> = {
@@ -190,15 +191,19 @@ function CategorySection({ title, emoji, picks, market, scanning, onOpen }: {
 // ── Main component ────────────────────────────────────────────────────────────
 function RefreshButton({ refresh }: { refresh: ReturnType<typeof useOnDemandRefresh> }) {
   const cooldown = refresh.status?.cooldown_seconds_left ?? 0;
-  const disabled = refresh.running || refresh.start.isPending || cooldown > 0;
-  const label = refresh.running ? "Retraining…" : refresh.start.isPending ? "Starting…"
-              : cooldown > 0 ? `Refresh in ${Math.ceil(cooldown / 60)} min` : "Refresh now";
+  const unavailable = refresh.statusError ? "Refresh unavailable" : refresh.status && !refresh.status.configured ? "Refresh not set up" : null;
+  const disabled = !!unavailable || refresh.running || refresh.start.isPending || cooldown > 0;
+  const label = unavailable ?? (refresh.running ? "Retraining…" : refresh.start.isPending ? "Starting…"
+              : cooldown > 0 ? `Refresh in ${Math.ceil(cooldown / 60)} min` : "Refresh now");
+  const title = refresh.statusError ? `The refresh service returned an error: ${refresh.statusError}`
+              : unavailable ? "Add GITHUB_DISPATCH_TOKEN to the Vercel project to enable on-demand refreshes"
+              : cooldown > 0 && !refresh.running ? "The data set was refreshed recently" : "Retrain every asset now (takes a few minutes)";
   return (
     <button
       type="button"
       onClick={() => refresh.start.mutate()}
       disabled={disabled}
-      title={cooldown > 0 && !refresh.running ? "The data set was refreshed recently" : "Retrain every asset now (takes a few minutes)"}
+      title={title}
       className={clsx("inline-flex items-center gap-1.5 px-3 min-h-[40px] rounded-lg text-xs font-medium transition-colors",
         "bg-surface border border-border text-fg2 hover:border-accent/40 hover:text-fg disabled:opacity-60 disabled:cursor-not-allowed")}
     >
@@ -258,7 +263,19 @@ function useOnDemandRefresh(currentComputedAt: string | null | undefined) {
   }, [landing, currentComputedAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const running = !!st?.running || (kickedAt !== null && Date.now() - kickedAt < 60_000 && !st?.run?.conclusion) || landing;
-  return { status: st, running, landing, start, kickedAt };
+
+  // Self-healing cadence: if the published data is older than STALE_AFTER and
+  // nothing is running, the first visitor triggers a rebuild (server-side
+  // cooldown prevents a stampede). Covers GitHub silently skipping cron runs.
+  const autoTriedRef = useRef(false);
+  useEffect(() => {
+    if (!st?.configured || st.running || autoTriedRef.current || start.isPending || !currentComputedAt) return;
+    const ageMs = Date.now() - new Date(currentComputedAt).getTime();
+    if (ageMs > STALE_AFTER_MS && st.cooldown_seconds_left === 0) { autoTriedRef.current = true; start.mutate(); }
+  }, [st?.configured, st?.running, st?.cooldown_seconds_left, currentComputedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const statusError = statusQ.error ? ((statusQ.error as any)?.response?.data?.error ?? (statusQ.error as Error).message) : null;
+  return { status: st, statusError, running, landing, start, kickedAt };
 }
 
 export default function TopPicksTab({ onOpenAsset }: Props) {
@@ -323,13 +340,13 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
         <div className="w-10 h-10 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center flex-shrink-0">
           <Trophy className="w-5 h-5 text-accent" />
         </div>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-48">
           <h2 className="font-semibold text-fg leading-tight">Top 5 ML picks</h2>
           <p className="text-xs text-muted">
             {data.total_scanned} of {totalAssets} assets ranked by composite score{asOf && <> · candles to {fmtDate(asOf)}</>}
           </p>
         </div>
-        <div className="flex items-center gap-3 text-xs text-muted flex-wrap">
+        <div className="flex items-center gap-3 text-xs text-muted flex-wrap w-full sm:w-auto">
           <span className="inline-flex items-center gap-1.5" title={data.computed_at ?? undefined}>
             {stale ? <Clock className="w-3.5 h-3.5 text-warning" /> : <CheckCircle className="w-3.5 h-3.5 text-success" />}
             models retrained {mins < 60 ? `${mins} min` : `${Math.round(mins / 60)} h`} ago
@@ -340,7 +357,7 @@ export default function TopPicksTab({ onOpenAsset }: Props) {
               next refresh {nextRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
-          {refresh.status?.configured && (
+          {(refresh.status?.configured || refresh.statusError) && (
             <RefreshButton refresh={refresh} />
           )}
         </div>
